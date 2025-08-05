@@ -2,7 +2,7 @@ version: '3.9'
 
 services:
   app1: &app
-    image: rinha-2025
+    image: maruero/rinha-de-backend-2025:v1
     hostname: app1
     environment:
       - PROCESSOR_URL=http://payment-processor-default:8080
