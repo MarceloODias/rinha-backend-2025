@@ -25,6 +25,8 @@ using ROCKSDB_NAMESPACE::DB;
 using ROCKSDB_NAMESPACE::Options;
 using ROCKSDB_NAMESPACE::Status;
 
+constexpr bool const_performance_metrics_enabled = true;
+
 struct Payment {
     string correlationId;
     double amount{};
@@ -45,6 +47,62 @@ static size_t write_callback(void* contents, const size_t size, const size_t nme
     static_cast<string*>(userp)->append(static_cast<char*>(contents), size * nmemb);
     return size * nmemb;
 }
+
+// ==== PROFILER ====
+
+std::unordered_map<string, std::atomic<long>> performance_data;
+std::unordered_map<string, std::atomic<long>> count_perf_data;
+
+std::chrono::high_resolution_clock::time_point get_now()
+{
+    return std::chrono::high_resolution_clock::now();
+}
+
+void init_profiler()
+{
+    for (const std::string& key : {
+        "parsing", "put-queue", "fetch-queue", "delete", "process_payment", "create_processor_payload", "send_to_processor",
+        "store_processed", "evaluate_switch", "handle_response"
+    }) {
+        performance_data.emplace(key, 0);
+        count_perf_data.emplace(key, 0);
+    }
+}
+
+string get_profiler_result()
+{
+    stringstream response;
+    response << "# Performance by features in total micros)\n\n";
+
+    // Output bucket metrics
+    for (const auto & [fst, snd] : performance_data) {
+        response << "\"" << fst << "\"("<< count_perf_data[fst].load(std::memory_order_relaxed) <<"): " << performance_data[fst].load(std::memory_order_relaxed) << "\n";
+    }
+
+    const string response_str = response.str();
+    return response_str;
+}
+
+void record_profiler_value(const string& featureName, const std::chrono::high_resolution_clock::time_point& start) {
+    if constexpr (!const_performance_metrics_enabled) {
+        return;
+    }
+
+    const auto end = std::chrono::high_resolution_clock::now();
+    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    performance_data.at(featureName).fetch_add(duration.count(), std::memory_order_relaxed);
+    count_perf_data.at(featureName).fetch_add(1, std::memory_order_relaxed);
+}
+
+void profiler_handler(const shared_ptr<Session>& session) {
+    const string response_str = get_profiler_result();
+    session->close(OK, response_str, {
+        {"Content-Type", "text/plain"},
+        {"Content-Length", to_string(response_str.size())},
+        {"Connection", "close" }});
+}
+
+// ==== PROFILER ====
 
 class PaymentService {
 public:
@@ -111,6 +169,8 @@ public:
     }
 
     void enqueue(const Payment& p) {
+        const auto start = get_now();
+
         uint64_t id = counter.fetch_add(1);
         Document d;
         d.SetObject();
@@ -119,6 +179,8 @@ public:
         d.AddMember("amount", p.amount, a);
         StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
         queue_db->Put(rocksdb::WriteOptions(), to_string(id), sb.GetString());
+
+        record_profiler_value("put-queue", start);
     }
 
     map<string, Summary> query(const string& from, const string& to) const
@@ -181,6 +243,8 @@ private:
     }
 
     bool fetch_next(Payment& p) {
+        const auto start = get_now();
+
         lock_guard<mutex> lock(queue_mutex);
         rocksdb::ReadOptions opts;
         opts.fill_cache = false;
@@ -190,15 +254,24 @@ private:
         if (!it->Valid()) return false;
         const string key = it->key().ToString();
         const string value = it->value().ToString();
+
+        const auto start_delete = get_now();
         queue_db->Delete(rocksdb::WriteOptions(), key);
+        record_profiler_value("delete", start);
+
         Document d; d.Parse(value.c_str());
         p.correlationId = d["correlationId"].GetString();
         p.amount = d["amount"].GetDouble();
+
+        record_profiler_value("fetch-queue", start);
+
         return true;
     }
 
     pair<string, string> process_payment(const Payment& p, bool isFallbackPool)
     {
+        const auto start = get_now();
+
         auto [payload, ts] = create_processor_payload(p);
         string primary = isFallbackPool ? test_url : main_url;
         string secondary = isFallbackPool ? main_url : test_url;
@@ -209,10 +282,13 @@ private:
         bool ok = send_to_processor(primary, payload, elapsed, code);
         handle_response(primary, elapsed, code, !isFallbackPool);
         if (ok) {
+
+            record_profiler_value("process_payment", start);
             return {primary_label, ts};
         }
         if (code == 422)
         {
+            record_profiler_value("process_payment", start);
             return {"discard", ts};
         }
 
@@ -220,17 +296,22 @@ private:
         ok = send_to_processor(secondary, payload, elapsed2, code2);
         handle_response(secondary, elapsed2, code2, false);
         if (ok) {
+            record_profiler_value("process_payment", start);
             return {secondary_label, ts};
         }
         if (code == 422)
         {
+            record_profiler_value("process_payment", start);
             return {"discard", ts};
         }
+        record_profiler_value("process_payment", start);
         return {"try_again", ts};
     }
 
     void handle_response(const string& url, double elapsed, long code, bool from_main_pool)
     {
+        const auto start = get_now();
+
         if (code == 500) {
             elapsed = numeric_limits<double>::max();
         }
@@ -239,6 +320,8 @@ private:
             trigger_switch();
         }
         evaluate_switch();
+
+        record_profiler_value("handle_response", start);
     }
 
     void update_time(const string& url, double elapsed)
@@ -257,6 +340,8 @@ private:
 
     void evaluate_switch()
     {
+        const auto start = get_now();
+
         const double def = default_time_ms.load();
         const double fb = fallback_time_ms.load();
         if (def == 0 || fb == 0) return;
@@ -267,9 +352,13 @@ private:
         } else {
             if (!using_default) swap(main_url, test_url);
         }
+
+        record_profiler_value("evaluate_switch", start);
     }
 
     static pair<string, string> create_processor_payload(const Payment& p) {
+        const auto start = get_now();
+
         auto now = chrono::system_clock::now();
         time_t t = chrono::system_clock::to_time_t(now);
         tm tm{}; gmtime_r(&t, &tm);
@@ -284,11 +373,16 @@ private:
         d.AddMember("amount", p.amount, a);
         d.AddMember("requestedAt", StringRef(requestedAt.c_str()), a);
         StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
+
+        record_profiler_value("create_processor_payload", start);
+
         return {sb.GetString(), requestedAt};
     }
 
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
-        const string url = base + "/payments";
+        const auto start_method = get_now();
+
+        const static string url = base + "/payments";
         string response;
         thread_local CurlHandle curl_wrapper;
         CURL* curl = curl_wrapper.handle;
@@ -302,32 +396,34 @@ private:
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        auto start = chrono::steady_clock::now();
-        CURLcode res = curl_easy_perform(curl);
-        auto end = chrono::steady_clock::now();
+        const auto start = chrono::steady_clock::now();
+        const CURLcode res = curl_easy_perform(curl);
+        const auto end = chrono::steady_clock::now();
         elapsed = chrono::duration<double, milli>(end - start).count();
         code = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
         curl_slist_free_all(headers);
 
-        /*
-        std::cout << "Processed payment: " << payload << "\n"
-                  << " with response code: " << code << "\n"
-                  << " in " << elapsed << " ms"
-                  << " with " << url << std::endl;
-        */
+        record_profiler_value("send_to_processor", start_method);
+
+        std::cout << code << " " << elapsed << " " << url << std::endl;
+
         return (res == CURLE_OK && code == 200);
     }
 
     void store_processed(const Payment& p, const string& processor, const string& timestamp) const
     {
+        const auto start = get_now();
+
         Document d; d.SetObject();
         auto& a = d.GetAllocator();
         d.AddMember("timestamp", StringRef(timestamp.c_str()), a);
         d.AddMember("amount", p.amount, a);
         d.AddMember("processor", StringRef(processor.c_str()), a);
         StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
-        string key = timestamp + "|" + p.correlationId;
+        const string key = timestamp + "|" + p.correlationId;
         processed_db->Put(rocksdb::WriteOptions(), key, sb.GetString());
+
+        record_profiler_value("store_processed", start);
     }
 
     unique_ptr<rocksdb::DB> queue_db;
@@ -353,20 +449,22 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     const int length = request->get_header("Content-Length", 0);
     session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body)
     {
+        const auto start_parse = get_now();
         Document d; d.Parse(reinterpret_cast<const char*>(body.data()), body.size());
 
-        const string response = R"({"status": "Accepted"})";
+        Payment p;
+        p.correlationId = d["correlationId"].GetString();
+        p.amount = d["amount"].GetDouble();
+        record_profiler_value("parsing", start_parse);
 
+        service->enqueue(p);
+
+        const string response = R"({"status": "Accepted"})";
         session->yield(202, response, {
             {"Content-Type", "application/json"},
             {"Content-Length", to_string(response.size())},
             {"Connection", "keep-alive"}
         });
-
-        Payment p;
-        p.correlationId = d["correlationId"].GetString();
-        p.amount = d["amount"].GetDouble();
-        service->enqueue(p);
     });
 }
 
@@ -426,6 +524,8 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 
 int main(const int, char**) {
     std::cout << "Starting Payment Service..." << std::endl;
+    init_profiler();
+
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
@@ -440,11 +540,16 @@ int main(const int, char**) {
     summary->set_path("/payments-summary");
     summary->set_method_handler("GET", payments_summary_handler);
 
+    auto profiler = make_shared<Resource>();
+    profiler->set_path("/profiler");
+    profiler->set_method_handler("GET", profiler_handler);
+
     auto settings = make_shared<Settings>();
     settings->set_port(8080);
     Service rest_service;
     rest_service.publish(payments);
     rest_service.publish(summary);
+    rest_service.publish(profiler);
     rest_service.start(settings);
     curl_global_cleanup();
     return EXIT_SUCCESS;

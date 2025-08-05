@@ -72,7 +72,7 @@ COPY include ./include
 # Build the project
 RUN mkdir -p build && \
     cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG" .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -DNDEBUG" .. && \
     make
 
 RUN strip /usr/src/app/build/payments-service
