@@ -1,0 +1,16 @@
+/infra
+/catboost-precompiled
+/cmake-build-release
+/cmake-build-debug
+
+Dockerfile
+README.md
+dev.pem
+
+.dockerignore
+.gitignore
+.idea
+.DS_Store
+.git
+.sh
+
