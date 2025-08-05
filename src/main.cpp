@@ -69,14 +69,34 @@ void init_profiler()
     }
 }
 
+string get_local_time()
+{
+    // Get local date and time
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm local_tm;
+    localtime_r(&t, &local_tm);
+    std::stringstream ss;
+    ss << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S");
+
+    return ss.str();
+}
+
 string get_profiler_result()
 {
     stringstream response;
-    response << "# Performance by features in total micros)\n\n";
+    response << "# Performance by features in total micros)\n";
+    response << "# Generated at: " << get_local_time() << "\n\n";
 
     // Output bucket metrics
     for (const auto & [fst, snd] : performance_data) {
-        response << "\"" << fst << "\"("<< count_perf_data[fst].load(std::memory_order_relaxed) <<"): " << performance_data[fst].load(std::memory_order_relaxed) << "\n";
+        if (const long count = count_perf_data[fst].load(std::memory_order_relaxed); count > 0)
+        {
+            const double avg = static_cast<double>(performance_data[fst].load(std::memory_order_relaxed)) / count;
+            response << "\"" << fst << "\"("<< count_perf_data[fst].load(std::memory_order_relaxed) <<"): "
+                << avg << " - total: "
+                << performance_data[fst].load(std::memory_order_relaxed) << "\n";
+        }
     }
 
     const string response_str = response.str();
@@ -147,7 +167,7 @@ public:
         main_url = default_processor;
         test_url = fallback_processor;
         const char* fee = getenv("FEE_DIFFERENCE");
-        fee_difference = fee ? atof(fee) : 0.1;
+        fee_difference = fee ? atof(fee) : 0.11;
         const char* pace = getenv("FALLBACK_POOL_INTERVAL_MS");
         fallback_interval_ms = pace ? atoi(pace) : 1000;
 
@@ -311,15 +331,27 @@ private:
     void handle_response(const string& url, double elapsed, long code, bool from_main_pool)
     {
         const auto start = get_now();
+        if (!from_main_pool) {
+            if (code == 500) fallback_down.store(true);
+            else fallback_down.store(false);
+        }
 
         if (code == 500) {
             elapsed = numeric_limits<double>::max();
         }
         update_time(url, elapsed);
-        if (from_main_pool && code == 500) {
+        if (from_main_pool && code == 500 && !fallback_down.load()) {
             trigger_switch();
         }
-        evaluate_switch();
+        else if (from_main_pool && code == 500 && fallback_down.load())
+        {
+            std::cout << "Primary processor is down, waiting for fallback to recover..." << std::endl;
+            this_thread::sleep_for(chrono::milliseconds(500));
+        }
+        else
+        {
+            evaluate_switch();
+        }
 
         record_profiler_value("handle_response", start);
     }
@@ -335,7 +367,10 @@ private:
 
     void trigger_switch()
     {
+        const auto now = get_local_time();
         swap(main_url, test_url);
+
+        std::cout << "Switching to " << main_url << " at " << now << std::endl;
     }
 
     void evaluate_switch()
@@ -348,9 +383,9 @@ private:
         const double improvement = (def - fb) / def;
         const bool using_default = (main_url == default_processor);
         if (fb < def && improvement >= fee_difference) {
-            if (using_default) swap(main_url, test_url);
+            if (using_default) trigger_switch();
         } else {
-            if (!using_default) swap(main_url, test_url);
+            if (!using_default) trigger_switch();
         }
 
         record_profiler_value("evaluate_switch", start);
@@ -382,7 +417,7 @@ private:
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
         const auto start_method = get_now();
 
-        const static string url = base + "/payments";
+        const string url = base + "/payments";
         string response;
         thread_local CurlHandle curl_wrapper;
         CURL* curl = curl_wrapper.handle;
@@ -405,7 +440,8 @@ private:
 
         record_profiler_value("send_to_processor", start_method);
 
-        std::cout << code << " " << elapsed << " " << url << std::endl;
+        const auto now = get_local_time();
+        std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
 
         return (res == CURLE_OK && code == 200);
     }
@@ -437,6 +473,7 @@ private:
     string test_url;
     atomic<double> default_time_ms{0.0};
     atomic<double> fallback_time_ms{0.0};
+    atomic<bool> fallback_down{false};
     double fee_difference{0.0};
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
