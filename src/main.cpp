@@ -125,7 +125,7 @@ void profiler_handler(const shared_ptr<Session>& session) {
 
 class PaymentService {
 public:
-    static constexpr size_t QUEUE_CAPACITY = 1'000'000;
+    static constexpr size_t QUEUE_CAPACITY = 10'000;
 
     PaymentService() {
         std::cout << "Initializing PaymentService..." << std::endl;
@@ -171,6 +171,7 @@ public:
             workers.emplace_back([this]{ worker_loop(false); });
         }
         workers.emplace_back([this]{ worker_loop(true); });
+        workers.emplace_back([this]{ profiler_loop(); });
         std::cout << "Threads started" << std::endl;
     }
 
@@ -183,7 +184,7 @@ public:
 
     void enqueue(const Payment& p) {
         const auto start = get_now();
-        size_t idx = tail.fetch_add(1, std::memory_order_acq_rel);
+        const size_t idx = tail.fetch_add(1, std::memory_order_acq_rel);
         queue[idx % queue.size()] = p;
 
         record_profiler_value("put-queue", start);
@@ -227,6 +228,16 @@ public:
     }
 
 private:
+    void profiler_loop()
+    {
+        while (running)
+        {
+            const string response_str = get_profiler_result();
+            std::cout << response_str << std::endl;
+            this_thread::sleep_for(chrono::seconds(10));
+        }
+    }
+
     void worker_loop(bool isFallbackPool) {
         while (running) {
             Payment p; bool has = fetch_next(p);
@@ -256,7 +267,6 @@ private:
             size_t current_head = head.load(std::memory_order_acquire);
             size_t current_tail = tail.load(std::memory_order_acquire);
             if (current_head >= current_tail) {
-                record_profiler_value("fetch-queue", start);
                 return false;
             }
             if (head.compare_exchange_weak(current_head, current_head + 1, std::memory_order_acq_rel)) {
@@ -547,26 +557,36 @@ int main(const int, char**) {
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
 
-
     curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
 
     std::cout << "Initializing the paths..." << std::endl;
 
-    auto payments = make_shared<Resource>();
+    const auto payments = make_shared<Resource>();
     payments->set_path("/payments");
     payments->set_method_handler("POST", post_payment_handler);
 
-    auto summary = make_shared<Resource>();
+    const auto summary = make_shared<Resource>();
     summary->set_path("/payments-summary");
     summary->set_method_handler("GET", payments_summary_handler);
 
-    auto profiler = make_shared<Resource>();
+    const auto profiler = make_shared<Resource>();
     profiler->set_path("/profiler");
     profiler->set_method_handler("GET", profiler_handler);
 
-    auto settings = make_shared<Settings>();
+    auto concurrency = std::thread::hardware_concurrency();
+    const auto env_concurrency = std::getenv("CONCURRENCY");
+    if (env_concurrency != nullptr) {
+        concurrency = std::stoi(env_concurrency);
+    }
+
+    const auto settings = make_shared<Settings>();
     settings->set_port(8080);
+    settings->set_worker_limit(concurrency);
+    settings->set_keep_alive(true);
+    settings->set_default_header("Connection", "keep-alive");
+    settings->set_connection_timeout(std::chrono::seconds(60));
+
     Service rest_service;
     rest_service.publish(payments);
     rest_service.publish(summary);
