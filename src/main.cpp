@@ -172,12 +172,10 @@ public:
         fallback_interval_ms = pace ? atoi(pace) : 1000;
 
         std::cout << "Configurations read" << std::endl;
-
         for (int i = 0; i < 5; ++i) {
             workers.emplace_back([this]{ worker_loop(false); });
         }
         workers.emplace_back([this]{ worker_loop(true); });
-
         std::cout << "Threads started" << std::endl;
     }
 
