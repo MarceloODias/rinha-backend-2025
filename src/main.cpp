@@ -7,7 +7,6 @@
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
-#include <mutex>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -61,7 +60,7 @@ std::chrono::high_resolution_clock::time_point get_now()
 void init_profiler()
 {
     for (const std::string& key : {
-        "parsing", "put-queue", "fetch-queue", "delete", "process_payment", "create_processor_payload", "send_to_processor",
+        "parsing", "put-queue", "fetch-queue", "process_payment", "create_processor_payload", "send_to_processor",
         "store_processed", "evaluate_switch", "handle_response"
     }) {
         performance_data.emplace(key, 0);
@@ -126,39 +125,35 @@ void profiler_handler(const shared_ptr<Session>& session) {
 
 class PaymentService {
 public:
+    static constexpr size_t QUEUE_CAPACITY = 1'000'000;
+
     PaymentService() {
         std::cout << "Initializing PaymentService..." << std::endl;
 
         const char* db_folder = getenv("DATABASE_PATH");
-        string queue_db_path = db_folder ? string(db_folder) : "data_";
         string processed_db_path = db_folder ? string(db_folder) : "data_";
 
         Options options;
         options.create_if_missing = true;
         options.IncreaseParallelism();
         options.OptimizeLevelStyleCompaction();
-        DB* qdb;
         DB* pdb;
 
-        std::cout << "Opening RocksDB databases..." << std::endl;
-        const Status q_status = DB::Open(options, queue_db_path.append("queue_db_file"), &qdb);
+        std::cout << "Opening RocksDB database..." << std::endl;
         const Status p_status = DB::Open(options, processed_db_path.append("processed_db_file"), &pdb);
 
-        std::cout << "Databases opened. Checking the status..." << std::endl;
+        std::cout << "Database opened. Checking the status..." << std::endl;
 
-        if (!q_status.ok() || !p_status.ok()) {
-            std::cerr << "Failed to open DBs:\n"
-                      << "queue_db: " << q_status.ToString() << "\n"
-                      << "processed_db: " << p_status.ToString() << std::endl;
-            throw runtime_error("Failed to open RocksDB databases");
+        if (!p_status.ok()) {
+            std::cerr << "Failed to open processed_db: " << p_status.ToString() << std::endl;
+            throw runtime_error("Failed to open RocksDB database");
         }
 
-        std::cout << "Starting database..." << std::endl;
-
-        queue_db.reset(qdb);
         processed_db.reset(pdb);
 
         std::cout << "Database started..." << std::endl;
+
+        queue.resize(QUEUE_CAPACITY);
 
         const char* def = getenv("PROCESSOR_URL");
         const char* fb = getenv("FALLBACK_PROCESSOR_URL");
@@ -188,15 +183,8 @@ public:
 
     void enqueue(const Payment& p) {
         const auto start = get_now();
-
-        uint64_t id = counter.fetch_add(1);
-        Document d;
-        d.SetObject();
-        auto& a = d.GetAllocator();
-        d.AddMember("correlationId", StringRef(p.correlationId.c_str()), a);
-        d.AddMember("amount", p.amount, a);
-        StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
-        queue_db->Put(rocksdb::WriteOptions(), to_string(id), sb.GetString());
+        size_t idx = tail.fetch_add(1, std::memory_order_acq_rel);
+        queue[idx % queue.size()] = p;
 
         record_profiler_value("put-queue", start);
     }
@@ -263,23 +251,21 @@ private:
     bool fetch_next(Payment& p) {
         const auto start = get_now();
 
-        lock_guard<mutex> lock(queue_mutex);
-        rocksdb::ReadOptions opts;
-        opts.fill_cache = false;
-        opts.verify_checksums = false;
-        unique_ptr<rocksdb::Iterator> it(queue_db->NewIterator(opts));
-        it->SeekToFirst();
-        if (!it->Valid()) return false;
-        const string key = it->key().ToString();
-        const string value = it->value().ToString();
+        size_t idx;
+        while (true) {
+            size_t current_head = head.load(std::memory_order_acquire);
+            size_t current_tail = tail.load(std::memory_order_acquire);
+            if (current_head >= current_tail) {
+                record_profiler_value("fetch-queue", start);
+                return false;
+            }
+            if (head.compare_exchange_weak(current_head, current_head + 1, std::memory_order_acq_rel)) {
+                idx = current_head;
+                break;
+            }
+        }
 
-        const auto start_delete = get_now();
-        queue_db->Delete(rocksdb::WriteOptions(), key);
-        record_profiler_value("delete", start);
-
-        Document d; d.Parse(value.c_str());
-        p.correlationId = d["correlationId"].GetString();
-        p.amount = d["amount"].GetDouble();
+        p = queue[idx % queue.size()];
 
         record_profiler_value("fetch-queue", start);
 
@@ -460,11 +446,11 @@ private:
         record_profiler_value("store_processed", start);
     }
 
-    unique_ptr<rocksdb::DB> queue_db;
     unique_ptr<rocksdb::DB> processed_db;
-    mutex queue_mutex;
+    vector<Payment> queue;
+    atomic<size_t> head{0};
+    atomic<size_t> tail{0};
     vector<thread> workers;
-    atomic<uint64_t> counter{0};
     string default_processor;
     string fallback_processor;
     string main_url;
