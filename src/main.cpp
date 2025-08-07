@@ -619,7 +619,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
         service->enqueue(p);
 
         static const string response = R"({"status": "Accepted"})";
-        session->close(202, response, {
+        session->yield(202, response, {
             {"Content-Type", "application/json"},
             {"Content-Length", to_string(response.size())},
             {"Connection", "keep-alive"}
@@ -701,7 +701,7 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     rapidjson::Writer<rapidjson::StringBuffer> writer(sb);
     d.Accept(writer);
 
-    session->close(200, sb.GetString(), {
+    session->yield(200, sb.GetString(), {
         { "Content-Type", "application/json" },
         { "Content-Length", to_string(sb.GetSize())},
         {"Connection", "keep-alive"}
