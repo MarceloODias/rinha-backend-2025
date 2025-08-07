@@ -441,7 +441,10 @@ private:
     {
         const auto start = get_now();
 
-        auto [payload, ts] = create_processor_payload(p);
+        auto payload_ts = create_processor_payload(p);
+        const std::string& payload = payload_ts.first;
+        const std::string& ts = payload_ts.second;
+
         string primary = isFallbackPool ? test_url : main_url;
         string secondary = isFallbackPool ? main_url : test_url;
         string primary_label = (primary == default_processor ? "default" : "fallback");
