@@ -29,7 +29,7 @@ using ROCKSDB_NAMESPACE::DB;
 using ROCKSDB_NAMESPACE::Options;
 using ROCKSDB_NAMESPACE::Status;
 
-constexpr bool const_performance_metrics_enabled = true;
+constexpr bool const_performance_metrics_enabled = false;
 
 struct Payment {
     string correlationId;
@@ -245,9 +245,11 @@ public:
         for (int i = 0; i < workerCountInt; ++i) {
             workers.emplace_back([this]{ worker_loop(); });
         }
-        // workers.emplace_back([this]{ worker_loop(true); });
 
-        workers.emplace_back([this]{ profiler_loop(); });
+        if (const_performance_metrics_enabled)
+        {
+            workers.emplace_back([this]{ profiler_loop(); });
+        }
         std::cout << "Threads started" << std::endl;
     }
 
@@ -463,6 +465,10 @@ private:
     {
         swap(main_url, test_url);
 
+        if (!const_performance_metrics_enabled)
+        {
+            return;
+        }
         const auto now = get_local_time();
         std::cout << reason << " - switching to " << main_url << " at " << now << std::endl;
     }
