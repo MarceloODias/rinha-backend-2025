@@ -324,8 +324,7 @@ private:
             pinned = true;
         }
 
-        auto last_fallback = get_now();
-        std::mutex last_fallback_mutex;
+        last_fallback = get_now();
 
         while (running) {
             Payment p; bool has = fetch_next(p);
@@ -335,16 +334,12 @@ private:
             }
 
             bool isFallbackPool = false;
-            {
-                std::lock_guard<std::mutex> lock(last_fallback_mutex);
-
-                const auto now = get_now();
-                int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
-                if (elapsed >= fallback_interval_ms) {
-                    isFallbackPool = true;
-                    last_fallback = now;
-                    std::cout << "Trying fallback at: " << get_local_time() << std::endl;
-                }
+            const auto now = get_now();
+            int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
+            if (elapsed >= fallback_interval_ms) {
+                last_fallback = now;
+                isFallbackPool = true;
+                std::cout << "Trying fallback at: " << get_local_time() << std::endl;
             }
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
@@ -602,6 +597,7 @@ private:
     double fee_difference{0.0};
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
+    auto last_fallback = get_now();
 };
 
 static shared_ptr<PaymentService> service;
