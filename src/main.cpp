@@ -336,8 +336,8 @@ private:
             bool isFallbackPool = false;
             const auto now = get_now();
             int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
-            if (elapsed >= fallback_interval_ms) {
-                last_fallback = now;
+            if (!fallback_is_running && elapsed >= fallback_interval_ms) {
+                fallback_is_running = true;
                 isFallbackPool = true;
                 std::cout << "Trying fallback at: " << get_local_time() << std::endl;
             }
@@ -349,6 +349,12 @@ private:
             else
             {
                 store_processed(p, processor, ts);
+            }
+
+            if (isFallbackPool)
+            {
+                fallback_is_running = false;
+                last_fallback = get_now();
             }
         }
     }
@@ -598,6 +604,7 @@ private:
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
     std::chrono::high_resolution_clock::time_point last_fallback;
+    bool fallback_is_running{false};
 };
 
 static shared_ptr<PaymentService> service;
