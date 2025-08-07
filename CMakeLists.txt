@@ -48,6 +48,8 @@ endif()
 add_executable(payments-service src/main.cpp)
 
 find_package(Threads REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+include_directories(${Boost_INCLUDE_DIRS})
 
 target_link_libraries(payments-service PRIVATE
         restbed
@@ -58,5 +60,5 @@ target_link_libraries(payments-service PRIVATE
         lz4
         zstd
         gflags
-        curl
+        Boost::system
         Threads::Threads)
