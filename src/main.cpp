@@ -347,9 +347,6 @@ private:
             {
                 store_processed(p, processor, ts);
             }
-            if (isFallbackPool) {
-                this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms));
-            }
         }
     }
 
