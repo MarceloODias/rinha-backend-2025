@@ -597,7 +597,7 @@ private:
     double fee_difference{0.0};
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
-    auto last_fallback = get_now();
+    std::chrono::high_resolution_clock::time_point last_fallback;
 };
 
 static shared_ptr<PaymentService> service;
