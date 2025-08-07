@@ -196,7 +196,7 @@ public:
     static constexpr size_t QUEUE_CAPACITY = 10'000;
 
     PaymentService() {
-        std::cout << "Initializing PaymentService..." << std::endl;
+        std::cout << "Initializing PaymentService v1.0..." << std::endl;
 
         const char* db_folder = getenv("DATABASE_PATH");
         string processed_db_path = db_folder ? string(db_folder) : "data_";
