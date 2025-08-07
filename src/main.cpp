@@ -412,7 +412,7 @@ private:
         }
         update_time(url, elapsed);
         if (from_main_pool && code == 500 && !fallback_down.load()) {
-            trigger_switch();
+            trigger_switch("Main down");
         }
         else if (from_main_pool && code == 500 && fallback_down.load())
         {
@@ -436,15 +436,12 @@ private:
         }
     }
 
-    void trigger_switch()
+    void trigger_switch(const string& reason)
     {
         const auto now = get_local_time();
         swap(main_url, test_url);
 
-        if constexpr (!const_performance_metrics_enabled) {
-            return;
-        }
-        std::cout << "Switching to " << main_url << " at " << now << std::endl;
+        std::cout << reason << " - switching to " << main_url << " at " << now << std::endl;
     }
 
     void evaluate_switch()
@@ -457,9 +454,9 @@ private:
         const double improvement = (def - fb) / def;
         const bool using_default = (main_url == default_processor);
         if (fb < def && improvement >= fee_difference) {
-            if (using_default) trigger_switch();
+            if (using_default) trigger_switch("Fallback better");
         } else {
-            if (!using_default) trigger_switch();
+            if (!using_default) trigger_switch("Main better");
         }
 
         record_profiler_value("evaluate_switch", start);
