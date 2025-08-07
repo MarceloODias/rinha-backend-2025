@@ -331,12 +331,11 @@ private:
             }
 
             bool isFallbackPool = false;
-            if (!fallback_down.load()) {
-                const auto now = get_now();
-                if (chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count() >= fallback_interval_ms) {
-                    isFallbackPool = true;
-                    last_fallback = now;
-                }
+            const auto now = get_now();
+            int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
+            if (elapsed >= fallback_interval_ms) {
+                isFallbackPool = true;
+                last_fallback = now;
             }
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
