@@ -4,8 +4,6 @@
 #include <rapidjson/stringbuffer.h>
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
-#include <rocksdb/env.h>
-#include <rocksdb/utilities/memory_env.h>
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
