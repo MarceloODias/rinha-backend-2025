@@ -322,7 +322,7 @@ private:
             static std::atomic<int> next_cpu{0};
             int total_cores = std::thread::hardware_concurrency();
             int cpu_id = (next_cpu++ % (total_cores / 2)) + (total_cores / 2);
-            pin_thread_to_core(cpu_id, "worker");
+            // pin_thread_to_core(cpu_id, "worker");
             pinned = true;
         }
 
@@ -341,7 +341,10 @@ private:
             if (!fallback_is_running && elapsed >= fallback_interval_ms) {
                 fallback_is_running = true;
                 isFallbackPool = true;
-                std::cout << "Trying fallback at: " << get_local_time() << std::endl;
+                if (const_performance_metrics_enabled)
+                {
+                    std::cout << "Trying fallback at: " << get_local_time() << std::endl;
+                }
             }
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
@@ -620,7 +623,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     if (!pinned) {
         static std::atomic<int> next_cpu{0};
         int cpu_id = next_cpu++ % (std::thread::hardware_concurrency() / 2); // Pin to half of available cores
-        pin_thread_to_core(cpu_id, "rest");
+        // pin_thread_to_core(cpu_id, "rest");
         pinned = true;
     }
 
