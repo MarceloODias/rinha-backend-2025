@@ -111,13 +111,17 @@ void init_profiler()
 
 string get_local_time()
 {
-    // Get local date and time
     auto now = std::chrono::system_clock::now();
     std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm local_tm;
     localtime_r(&t, &local_tm);
+
+    // Get milliseconds part
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
     std::stringstream ss;
     ss << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S");
+    ss << '.' << std::setw(3) << std::setfill('0') << ms.count();
 
     return ss.str();
 }
@@ -339,6 +343,7 @@ private:
                 if (elapsed >= fallback_interval_ms) {
                     isFallbackPool = true;
                     last_fallback = now;
+                    std::cout << "Trying fallback at: " << get_local_time() << std::endl;
                 }
             }
 
@@ -455,9 +460,9 @@ private:
 
     void trigger_switch(const string& reason)
     {
-        const auto now = get_local_time();
         swap(main_url, test_url);
 
+        const auto now = get_local_time();
         std::cout << reason << " - switching to " << main_url << " at " << now << std::endl;
     }
 
@@ -543,10 +548,9 @@ private:
 
         record_profiler_value("send_to_processor", start_method);
 
-        const auto now = get_local_time();
-
         if constexpr (const_performance_metrics_enabled)
         {
+            const auto now = get_local_time();
             std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
         }
 
