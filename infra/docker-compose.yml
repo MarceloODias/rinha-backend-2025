@@ -16,8 +16,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
-          memory: "150MB"
+          cpus: "0.70"
+          memory: "167MB"
 
   app2:
     <<: *app
@@ -31,8 +31,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
-          memory: "150MB"
+          cpus: "0.70"
+          memory: "167MB"
 
   nginx:
     image: nginx:alpine
@@ -49,8 +49,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
-          memory: "50MB"
+          cpus: "0.10"
+          memory: "16MB"
 
 networks:
   backend:

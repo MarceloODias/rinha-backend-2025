@@ -56,6 +56,7 @@ RUN git clone --branch v10.4.2 --depth 1 https://github.com/facebook/rocksdb.git
       -DWITH_LZ4=1 \
       -DWITH_ZSTD=1 \
       -DBUILD_SHARED_LIBS=ON \
+      -DWITH_MEMENV=ON \
       -DPORTABLE=1 \
       -DUSE_RTTI=1 && \
     make -j$(nproc) && \

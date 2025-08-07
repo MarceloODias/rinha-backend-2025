@@ -4,6 +4,8 @@
 #include <rapidjson/stringbuffer.h>
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
+#include <rocksdb/env.h>
+#include <rocksdb/utilities/memory_env.h>
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
@@ -24,28 +26,64 @@ using ROCKSDB_NAMESPACE::DB;
 using ROCKSDB_NAMESPACE::Options;
 using ROCKSDB_NAMESPACE::Status;
 
-constexpr bool const_performance_metrics_enabled = true;
+constexpr bool const_performance_metrics_enabled = false;
 
 struct Payment {
     string correlationId;
     double amount{};
 };
 
+static size_t write_callback(void* contents, const size_t size, const size_t nmemb, void* userp) {
+    auto* response = static_cast<std::string*>(userp);
+    response->append(static_cast<char*>(contents), size * nmemb);
+    return size * nmemb;
+}
+
 struct CurlHandle {
-    CURL* handle;
-    CurlHandle() : handle(curl_easy_init()) {}
-    ~CurlHandle() { if (handle) curl_easy_cleanup(handle); }
+    CURL* handle = nullptr;
+    struct curl_slist* headers = nullptr;
+    std::string response_buffer;
+
+    CurlHandle() {
+        handle = curl_easy_init();
+        if (handle) {
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+
+            curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(handle, CURLOPT_POST, 1L);
+            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
+            curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
+
+            // Optional: set timeouts or connection reuse options
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 30L);
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 15L);
+        }
+    }
+
+    ~CurlHandle() {
+        if (headers) curl_slist_free_all(headers);
+        if (handle) curl_easy_cleanup(handle);
+    }
+
+    void clear_response() {
+        response_buffer.clear();
+    }
+
+    const std::string& response() const {
+        return response_buffer;
+    }
+
+    void set_payload(const std::string& url, const std::string& body) {
+        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.c_str());
+    }
 };
 
 struct Summary {
     uint64_t totalRequests = 0;
     double totalAmount = 0.0;
 };
-
-static size_t write_callback(void* contents, const size_t size, const size_t nmemb, void* userp) {
-    static_cast<string*>(userp)->append(static_cast<char*>(contents), size * nmemb);
-    return size * nmemb;
-}
 
 // ==== PROFILER ====
 
@@ -119,6 +157,14 @@ void profiler_handler(const shared_ptr<Session>& session) {
         {"Content-Type", "text/plain"},
         {"Content-Length", to_string(response_str.size())},
         {"Connection", "close" }});
+}
+
+void print_log(const string& message)
+{
+    if constexpr (!const_performance_metrics_enabled) {
+        return;
+    }
+    std::cout << message << std::endl;
 }
 
 // ==== PROFILER ====
@@ -339,7 +385,7 @@ private:
         }
         else if (from_main_pool && code == 500 && fallback_down.load())
         {
-            std::cout << "Primary processor is down, waiting for fallback to recover..." << std::endl;
+            print_log("Primary processor is down, waiting for fallback to recover...");
             this_thread::sleep_for(chrono::milliseconds(500));
         }
         else
@@ -364,6 +410,9 @@ private:
         const auto now = get_local_time();
         swap(main_url, test_url);
 
+        if constexpr (!const_performance_metrics_enabled) {
+            return;
+        }
         std::cout << "Switching to " << main_url << " at " << now << std::endl;
     }
 
@@ -388,20 +437,35 @@ private:
     static pair<string, string> create_processor_payload(const Payment& p) {
         const auto start = get_now();
 
-        auto now = chrono::system_clock::now();
+        // ---- Timestamp formatting ----
+        auto const now = chrono::system_clock::now();
         time_t t = chrono::system_clock::to_time_t(now);
-        tm tm{}; gmtime_r(&t, &tm);
-        auto ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
-        stringstream ss;
-        ss << put_time(&tm, "%Y-%m-%dT%H:%M:%S");
-        ss << '.' << setw(3) << setfill('0') << ms.count() << 'Z';
-        const string requestedAt = ss.str();
-        Document d; d.SetObject();
+        tm tm{};
+        gmtime_r(&t, &tm);
+        auto const ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+        // Reuse stringstream per thread
+        thread_local stringstream timestamp_ss;
+        timestamp_ss.str("");
+        timestamp_ss.clear();
+
+        timestamp_ss << put_time(&tm, "%Y-%m-%dT%H:%M:%S");
+        timestamp_ss << '.' << setw(3) << setfill('0') << ms.count() << 'Z';
+        const string requestedAt = timestamp_ss.str();
+
+        // ---- JSON Building ----
+        thread_local Document d;
+        d.SetObject();  // Reset for reuse
         auto& a = d.GetAllocator();
+
         d.AddMember("correlationId", StringRef(p.correlationId.c_str()), a);
         d.AddMember("amount", p.amount, a);
         d.AddMember("requestedAt", StringRef(requestedAt.c_str()), a);
-        StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
+
+        thread_local StringBuffer sb;
+        sb.Clear();  // Reuse buffer
+        Writer<StringBuffer> w(sb);
+        d.Accept(w);
 
         record_profiler_value("create_processor_payload", start);
 
@@ -412,30 +476,34 @@ private:
         const auto start_method = get_now();
 
         const string url = base + "/payments";
-        string response;
         thread_local CurlHandle curl_wrapper;
+
         CURL* curl = curl_wrapper.handle;
-        if (!curl) { elapsed = 0; code = 0; return false; }
-        curl_easy_reset(curl);
-        struct curl_slist* headers = nullptr;
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        if (!curl) {
+            elapsed = 0;
+            code = 0;
+            return false;
+        }
+
+        curl_wrapper.clear_response(); // reuse buffer
+
+        curl_wrapper.set_payload(url, payload); // dynamic update only
+
         const auto start = chrono::steady_clock::now();
-        const CURLcode res = curl_easy_perform(curl);
+        CURLcode res = curl_easy_perform(curl);
         const auto end = chrono::steady_clock::now();
+
         elapsed = chrono::duration<double, milli>(end - start).count();
-        code = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-        curl_slist_free_all(headers);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
 
         record_profiler_value("send_to_processor", start_method);
 
         const auto now = get_local_time();
-        std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
+
+        if constexpr (const_performance_metrics_enabled)
+        {
+            std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
+        }
 
         return (res == CURLE_OK && code == 200);
     }
@@ -444,13 +512,27 @@ private:
     {
         const auto start = get_now();
 
-        Document d; d.SetObject();
+        // Reuse Document and buffer per thread
+        thread_local Document d;
+        d.SetObject();  // Clear any previous content
         auto& a = d.GetAllocator();
+
         d.AddMember("timestamp", StringRef(timestamp.c_str()), a);
         d.AddMember("amount", p.amount, a);
         d.AddMember("processor", StringRef(processor.c_str()), a);
-        StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
-        const string key = timestamp + "|" + p.correlationId;
+
+        thread_local StringBuffer sb;
+        sb.Clear();  // Important: clear buffer before reuse
+        Writer<StringBuffer> w(sb);
+        d.Accept(w);
+
+        // Key construction: thread-local stringstream to avoid reallocations
+        thread_local stringstream key_builder;
+        key_builder.str("");
+        key_builder.clear();
+        key_builder << timestamp << '|' << p.correlationId;
+        const string key = key_builder.str();
+
         processed_db->Put(rocksdb::WriteOptions(), key, sb.GetString());
 
         record_profiler_value("store_processed", start);
@@ -478,19 +560,29 @@ static shared_ptr<PaymentService> service;
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     const int length = request->get_header("Content-Length", 0);
-    session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body)
-    {
+
+    session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body) {
         const auto start_parse = get_now();
-        Document d; d.Parse(reinterpret_cast<const char*>(body.data()), body.size());
+
+        // Reuse allocator and Document per thread
+        thread_local rapidjson::MemoryPoolAllocator<> allocator;
+        allocator.Clear();  // Ensure clean allocator per request
+
+        thread_local rapidjson::Document d(&allocator);
+        d.SetObject();  // Clear previous JSON document
+
+        // Safe to parse non-null-terminated buffer using length
+        d.Parse<rapidjson::kParseDefaultFlags>(reinterpret_cast<const char*>(body.data()), body.size());
 
         Payment p;
         p.correlationId = d["correlationId"].GetString();
         p.amount = d["amount"].GetDouble();
+
         record_profiler_value("parsing", start_parse);
 
         service->enqueue(p);
 
-        const string response = R"({"status": "Accepted"})";
+        static const string response = R"({"status": "Accepted"})";
         session->yield(202, response, {
             {"Content-Type", "application/json"},
             {"Content-Length", to_string(response.size())},
@@ -532,7 +624,9 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     string from = request->get_query_parameter("from");
     string to = request->get_query_parameter("to");
     string internal = request->get_query_parameter("internal", "false");
+
     auto res = service->query(from, to);
+
     if (internal != "true") {
         const char* other = getenv("OTHER_INSTANCE_URL");
         if (other != nullptr) {
@@ -543,14 +637,39 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
             res["fallback"].totalAmount += otherRes["fallback"].totalAmount;
         }
     }
-    Document d; d.SetObject();
+
+    // === JSON serialization with reusable RapidJSON components ===
+    thread_local rapidjson::MemoryPoolAllocator<> allocator;
+    allocator.Clear();
+
+    thread_local rapidjson::Document d(&allocator);
+    d.SetObject();
     auto& a = d.GetAllocator();
-    Value def(kObjectType); def.AddMember("totalRequests", res["default"].totalRequests, a); def.AddMember("totalAmount", res["default"].totalAmount, a);
-    Value fb(kObjectType); fb.AddMember("totalRequests", res["fallback"].totalRequests, a); fb.AddMember("totalAmount", res["fallback"].totalAmount, a);
+
+    // Build default object
+    rapidjson::Value def(rapidjson::kObjectType);
+    def.AddMember("totalRequests", res["default"].totalRequests, a);
+    def.AddMember("totalAmount", res["default"].totalAmount, a);
+
+    // Build fallback object
+    rapidjson::Value fb(rapidjson::kObjectType);
+    fb.AddMember("totalRequests", res["fallback"].totalRequests, a);
+    fb.AddMember("totalAmount", res["fallback"].totalAmount, a);
+
     d.AddMember("default", def, a);
     d.AddMember("fallback", fb, a);
-    StringBuffer sb; Writer<StringBuffer> w(sb); d.Accept(w);
-    session->close(200, sb.GetString(), { { "Content-Type", "application/json" } });
+
+    thread_local rapidjson::StringBuffer sb;
+    sb.Clear();
+
+    rapidjson::Writer<rapidjson::StringBuffer> writer(sb);
+    d.Accept(writer);
+
+    session->yield(200, sb.GetString(), {
+        { "Content-Type", "application/json" },
+        { "Content-Length", to_string(sb.GetSize())},
+        {"Connection", "keep-alive"}
+    });
 }
 
 int main(const int, char**) {
@@ -574,7 +693,7 @@ int main(const int, char**) {
     profiler->set_path("/profiler");
     profiler->set_method_handler("GET", profiler_handler);
 
-    auto concurrency = std::thread::hardware_concurrency();
+    auto concurrency = std::thread::hardware_concurrency() * 2;
     const auto env_concurrency = std::getenv("CONCURRENCY");
     if (env_concurrency != nullptr) {
         concurrency = std::stoi(env_concurrency);
