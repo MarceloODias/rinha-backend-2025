@@ -24,7 +24,7 @@ using ROCKSDB_NAMESPACE::DB;
 using ROCKSDB_NAMESPACE::Options;
 using ROCKSDB_NAMESPACE::Status;
 
-constexpr bool const_performance_metrics_enabled = false;
+constexpr bool const_performance_metrics_enabled = true;
 
 struct Payment {
     string correlationId;

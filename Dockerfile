@@ -46,7 +46,7 @@ RUN git clone --branch v10.4.2 --depth 1 https://github.com/facebook/rocksdb.git
     cd /opt/rocksdb && \
     mkdir -p build && cd build && \
     cmake .. \
-      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -DNDEBUG" \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -DNDEBUG" \
       -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
       -DWITH_GFLAGS=1 \
@@ -55,6 +55,8 @@ RUN git clone --branch v10.4.2 --depth 1 https://github.com/facebook/rocksdb.git
       -DWITH_BZ2=1 \
       -DWITH_LZ4=1 \
       -DWITH_ZSTD=1 \
+      -DROCKSDB_BUILD_TESTS=OFF \
+      -DWITH_GFLAGS=OFF \
       -DBUILD_SHARED_LIBS=ON \
       -DWITH_MEMENV=ON \
       -DPORTABLE=1 \
