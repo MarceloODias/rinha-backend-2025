@@ -320,8 +320,8 @@ private:
             pinned = true;
         }
 
-
         auto last_fallback = get_now();
+        std::mutex last_fallback_mutex;
 
         while (running) {
             Payment p; bool has = fetch_next(p);
@@ -331,11 +331,15 @@ private:
             }
 
             bool isFallbackPool = false;
-            const auto now = get_now();
-            int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
-            if (elapsed >= fallback_interval_ms) {
-                isFallbackPool = true;
-                last_fallback = now;
+            {
+                std::lock_guard<std::mutex> lock(last_fallback_mutex);
+
+                const auto now = get_now();
+                int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
+                if (elapsed >= fallback_interval_ms) {
+                    isFallbackPool = true;
+                    last_fallback = now;
+                }
             }
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
