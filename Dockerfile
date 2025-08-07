@@ -16,8 +16,8 @@ RUN rm -rf /var/lib/apt/lists/* && \
     libssl-dev \
     uuid-dev \
     zlib1g-dev \
-    libcurl4-openssl-dev \
-    libasio-dev \
+    libboost-dev \
+    libboost-system-dev \
     libbz2-dev \
     libsnappy-dev \
     liblz4-dev \

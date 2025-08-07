@@ -4,7 +4,11 @@
 #include <rapidjson/stringbuffer.h>
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
-#include <curl/curl.h>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -15,10 +19,15 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <string_view>
 
 using namespace restbed;
 using namespace std;
 using namespace rapidjson;
+namespace beast = boost::beast;
+namespace http = beast::http;
+namespace net = boost::asio;
+using tcp = net::ip::tcp;
 
 using ROCKSDB_NAMESPACE::DB;
 using ROCKSDB_NAMESPACE::Options;
@@ -31,52 +40,102 @@ struct Payment {
     double amount{};
 };
 
-static size_t write_callback(void* contents, const size_t size, const size_t nmemb, void* userp) {
-    auto* response = static_cast<std::string*>(userp);
-    response->append(static_cast<char*>(contents), size * nmemb);
-    return size * nmemb;
+struct ParsedUrl {
+    string host;
+    string port;
+    string target;
+};
+
+static ParsedUrl parse_url(const string& url)
+{
+    ParsedUrl result;
+    string_view sv(url);
+    if (sv.rfind("http://", 0) == 0) {
+        sv.remove_prefix(7);
+    }
+    auto pos = sv.find('/');
+    string_view host_port = sv.substr(0, pos);
+    result.target = pos == string_view::npos ? "/" : string(sv.substr(pos));
+    auto colon = host_port.find(':');
+    if (colon == string_view::npos) {
+        result.host = string(host_port);
+        result.port = "80";
+    } else {
+        result.host = string(host_port.substr(0, colon));
+        result.port = string(host_port.substr(colon + 1));
+    }
+    return result;
 }
 
-struct CurlHandle {
-    CURL* handle = nullptr;
-    struct curl_slist* headers = nullptr;
-    std::string response_buffer;
+static bool http_post_json(const string& url, const string& payload, string& response, double& elapsed, long& code)
+{
+    try {
+        auto parsed = parse_url(url);
+        net::io_context ioc;
+        tcp::resolver resolver{ioc};
+        beast::tcp_stream stream{ioc};
+        auto const results = resolver.resolve(parsed.host, parsed.port);
+        auto start = chrono::steady_clock::now();
+        stream.connect(results);
 
-    CurlHandle() {
-        handle = curl_easy_init();
-        if (handle) {
-            headers = curl_slist_append(headers, "Content-Type: application/json");
+        http::request<http::string_body> req{http::verb::post, parsed.target, 11};
+        req.set(http::field::host, parsed.host);
+        req.set(http::field::content_type, "application/json");
+        req.body() = payload;
+        req.prepare_payload();
 
-            curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
-            curl_easy_setopt(handle, CURLOPT_POST, 1L);
-            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
+        http::write(stream, req);
+        beast::flat_buffer buffer;
+        http::response<http::string_body> res;
+        http::read(stream, buffer, res);
+        auto end = chrono::steady_clock::now();
 
-            // Optional: set timeouts or connection reuse options
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 30L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 15L);
-        }
+        elapsed = chrono::duration<double, milli>(end - start).count();
+        code = res.result_int();
+        response = res.body();
+
+        beast::error_code ec;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+        return code == 200;
     }
-
-    ~CurlHandle() {
-        if (headers) curl_slist_free_all(headers);
-        if (handle) curl_easy_cleanup(handle);
+    catch (const std::exception&) {
+        elapsed = 0;
+        code = 0;
+        response.clear();
+        return false;
     }
+}
 
-    void clear_response() {
-        response_buffer.clear();
-    }
+static bool http_get(const string& url, string& response, long& code)
+{
+    try {
+        auto parsed = parse_url(url);
+        net::io_context ioc;
+        tcp::resolver resolver{ioc};
+        beast::tcp_stream stream{ioc};
+        auto const results = resolver.resolve(parsed.host, parsed.port);
+        stream.connect(results);
 
-    const std::string& response() const {
-        return response_buffer;
-    }
+        http::request<http::empty_body> req{http::verb::get, parsed.target, 11};
+        req.set(http::field::host, parsed.host);
 
-    void set_payload(const std::string& url, const std::string& body) {
-        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.c_str());
+        http::write(stream, req);
+        beast::flat_buffer buffer;
+        http::response<http::string_body> res;
+        http::read(stream, buffer, res);
+        code = res.result_int();
+        response = res.body();
+
+        beast::error_code ec;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+        return code == 200;
     }
-};
+    catch (const std::exception&) {
+        code = 0;
+        response.clear();
+        return false;
+    }
+}
 
 struct Summary {
     uint64_t totalRequests = 0;
@@ -258,16 +317,11 @@ public:
         Document result; result.SetObject();
         string url = base_url + "/payments/service-health";
         string body;
-        CURL* curl = curl_easy_init();
-        if (!curl) return result;
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-        CURLcode res = curl_easy_perform(curl);
-        if (res == CURLE_OK) {
+        long code = 0;
+        http_get(url, body, code);
+        if (code == 200) {
             result.Parse(body.c_str());
         }
-        curl_easy_cleanup(curl);
         return result;
     }
 
@@ -474,25 +528,8 @@ private:
         const auto start_method = get_now();
 
         const string url = base + "/payments";
-        thread_local CurlHandle curl_wrapper;
-
-        CURL* curl = curl_wrapper.handle;
-        if (!curl) {
-            elapsed = 0;
-            code = 0;
-            return false;
-        }
-
-        curl_wrapper.clear_response(); // reuse buffer
-
-        curl_wrapper.set_payload(url, payload); // dynamic update only
-
-        const auto start = chrono::steady_clock::now();
-        CURLcode res = curl_easy_perform(curl);
-        const auto end = chrono::steady_clock::now();
-
-        elapsed = chrono::duration<double, milli>(end - start).count();
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+        string response;
+        bool ok = http_post_json(url, payload, response, elapsed, code);
 
         record_profiler_value("send_to_processor", start_method);
 
@@ -503,7 +540,7 @@ private:
             std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
         }
 
-        return (res == CURLE_OK && code == 200);
+        return ok;
     }
 
     void store_processed(const Payment& p, const string& processor, const string& timestamp) const
@@ -593,15 +630,9 @@ map<string, Summary> call_other_instance(const string& other, const string& from
     map<string, Summary> result; result["default"] = Summary(); result["fallback"] = Summary();
     string url = other + "/payments-summary?from=" + from + "&to=" + to + "&internal=true";
     string body;
-    CURL* curl = curl_easy_init();
-    if (!curl) return result;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    CURLcode res = curl_easy_perform(curl);
-    long code = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-    curl_easy_cleanup(curl);
-    if (res == CURLE_OK && code == 200) {
+    long code = 0;
+    bool ok = http_get(url, body, code);
+    if (ok && code == 200) {
         Document d; d.Parse(body.c_str());
         if (d.HasMember("default")) {
             auto& def = d["default"];
@@ -674,7 +705,6 @@ int main(const int, char**) {
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
 
-    curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
 
     std::cout << "Initializing the paths..." << std::endl;
@@ -709,7 +739,6 @@ int main(const int, char**) {
     rest_service.publish(summary);
     rest_service.publish(profiler);
     rest_service.start(settings);
-    curl_global_cleanup();
     return EXIT_SUCCESS;
 }
 
