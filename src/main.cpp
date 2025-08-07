@@ -22,6 +22,13 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <iostream>
+#include <thread>
+
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 using namespace restbed;
 using namespace std;
@@ -48,6 +55,26 @@ struct ParsedUrl {
     std::string port = "80";
     std::string target = "/";
 };
+
+void pin_thread_to_core(int core_id) {
+#ifdef __linux__
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core_id, &cpuset);
+
+    pthread_t current_thread = pthread_self();
+    int rc = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+    if (rc != 0) {
+        std::cerr << "Failed to set thread affinity. " << std::endl;
+    } else {
+        std::cout << "Thread pinned to core " << core_id << std::endl;
+    }
+#else
+    // On macOS or unsupported systems, just print a message.
+    std::cout << "Thread pinning is not supported on this platform - cpu: " << core_id << std::endl;
+#endif
+}
+
 
 static ParsedUrl parse_url(const std::string& url)
 {
@@ -402,6 +429,15 @@ private:
 
     void worker_loop(bool isFallbackPool) {
         while (running) {
+            thread_local bool pinned = false;
+            if (!pinned) {
+                static std::atomic<int> next_cpu{0};
+                int total_cores = std::thread::hardware_concurrency();
+                int cpu_id = (next_cpu++ % (total_cores / 2)) + (total_cores / 2);
+                pin_thread_to_core(cpu_id);
+                pinned = true;
+            }
+
             Payment p; bool has = fetch_next(p);
             if (!has) {
                 this_thread::sleep_for(chrono::milliseconds(100));
@@ -650,6 +686,14 @@ private:
 static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
+    thread_local bool pinned = false;
+    if (!pinned) {
+        static std::atomic<int> next_cpu{0};
+        int cpu_id = next_cpu++ % (std::thread::hardware_concurrency() / 2); // Pin to half of available cores
+        pin_thread_to_core(cpu_id);
+        pinned = true;
+    }
+
     const auto request = session->get_request();
     const int length = request->get_header("Content-Length", 0);
 
@@ -777,7 +821,7 @@ int main(const int, char**) {
     profiler->set_path("/profiler");
     profiler->set_method_handler("GET", profiler_handler);
 
-    auto concurrency = std::thread::hardware_concurrency() * 2;
+    auto concurrency = std::thread::hardware_concurrency() / 2;
     const auto env_concurrency = std::getenv("CONCURRENCY");
     if (env_concurrency != nullptr) {
         concurrency = std::stoi(env_concurrency);
