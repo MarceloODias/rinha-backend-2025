@@ -16,6 +16,11 @@
 #include <iostream>
 #include <limits>
 
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
+
 using namespace restbed;
 using namespace std;
 using namespace rapidjson;
@@ -167,6 +172,25 @@ void print_log(const string& message)
 
 // ==== PROFILER ====
 
+void pin_thread_to_core(int core_id, string group) {
+#ifdef __linux__
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core_id, &cpuset);
+
+    pthread_t current_thread = pthread_self();
+    int rc = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
+    if (rc != 0) {
+        std::cerr << "Failed to set thread affinity. " << std::endl;
+    } else {
+        std::cout << group << " thread pinned to core " << core_id << std::endl;
+    }
+#else
+    // On macOS or unsupported systems, just print a message.
+    std::cout << group << " thread pinning is not supported on this platform - cpu: " << core_id << std::endl;
+#endif
+}
+
 class PaymentService {
 public:
     static constexpr size_t QUEUE_CAPACITY = 10'000;
@@ -283,6 +307,15 @@ private:
     }
 
     void worker_loop(bool isFallbackPool) {
+        thread_local bool pinned = false;
+        if (!pinned) {
+            static std::atomic<int> next_cpu{0};
+            int total_cores = std::thread::hardware_concurrency();
+            int cpu_id = (next_cpu++ % (total_cores / 2)) + (total_cores / 2);
+            pin_thread_to_core(cpu_id, "worker");
+            pinned = true;
+        }
+
         while (running) {
             Payment p; bool has = fetch_next(p);
             if (!has) {
@@ -556,6 +589,14 @@ private:
 static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
+    thread_local bool pinned = false;
+    if (!pinned) {
+        static std::atomic<int> next_cpu{0};
+        int cpu_id = next_cpu++ % (std::thread::hardware_concurrency() / 2); // Pin to half of available cores
+        pin_thread_to_core(cpu_id, "rest");
+        pinned = true;
+    }
+
     const auto request = session->get_request();
     const int length = request->get_header("Content-Length", 0);
 
