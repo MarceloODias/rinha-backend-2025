@@ -234,11 +234,15 @@ public:
         const char* pace = getenv("FALLBACK_POOL_INTERVAL_MS");
         fallback_interval_ms = pace ? atoi(pace) : 1000;
 
+        const char* workerCount = getenv("WORKER_COUNT");
+        int workerCountInt = workerCount ? atoi(workerCount) : 5;
+
         std::cout << "Configurations read" << std::endl;
-        for (int i = 0; i < 5; ++i) {
-            workers.emplace_back([this]{ worker_loop(false); });
+        for (int i = 0; i < workerCountInt; ++i) {
+            workers.emplace_back([this]{ worker_loop(); });
         }
-        workers.emplace_back([this]{ worker_loop(true); });
+        // workers.emplace_back([this]{ worker_loop(true); });
+
         workers.emplace_back([this]{ profiler_loop(); });
         std::cout << "Threads started" << std::endl;
     }
@@ -306,7 +310,7 @@ private:
         }
     }
 
-    void worker_loop(bool isFallbackPool) {
+    void worker_loop() {
         thread_local bool pinned = false;
         if (!pinned) {
             static std::atomic<int> next_cpu{0};
@@ -316,12 +320,25 @@ private:
             pinned = true;
         }
 
+
+        auto last_fallback = get_now();
+
         while (running) {
             Payment p; bool has = fetch_next(p);
             if (!has) {
                 this_thread::sleep_for(chrono::milliseconds(100));
                 continue;
             }
+
+            bool isFallbackPool = false;
+            if (!fallback_down.load()) {
+                const auto now = get_now();
+                if (chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count() >= fallback_interval_ms) {
+                    isFallbackPool = true;
+                    last_fallback = now;
+                }
+            }
+
             auto [processor, ts] = process_payment(p, isFallbackPool);
             if (processor == "try_again") {
                 enqueue(p);
