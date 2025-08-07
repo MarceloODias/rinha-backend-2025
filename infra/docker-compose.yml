@@ -34,13 +34,13 @@ services:
           cpus: "0.70"
           memory: "167MB"
 
-  nginx:
-    image: nginx:alpine
+  haproxy:
+    image: haproxy:alpine
     restart: always
     ports:
       - "9999:9999"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
       - app1
       - app2
