@@ -9,6 +9,9 @@
 #include <boost/beast/version.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <functional>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -99,35 +102,99 @@ static bool beast_get(const std::string& url, std::string& body, long& status)
     }
 }
 
-static bool beast_post(const std::string& url, const std::string& payload, double& elapsed, long& status)
+static void beast_post(const std::string& url, const std::string& payload, net::io_context& ioc,
+                       std::function<void(bool, double, long)> cb)
 {
-    try {
-        auto u = parse_url(url);
-        net::io_context ioc;
-        tcp::resolver resolver(ioc);
-        beast::tcp_stream stream(ioc);
-        stream.connect(resolver.resolve(u.host, u.port));
-        http::request<http::string_body> req{http::verb::post, u.target, 11};
-        req.set(http::field::host, u.host);
-        req.set(http::field::content_type, "application/json");
-        req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
-        req.body() = payload;
-        req.prepare_payload();
-        const auto start = chrono::steady_clock::now();
-        http::write(stream, req);
+    struct session : std::enable_shared_from_this<session>
+    {
+        tcp::resolver resolver;
+        beast::tcp_stream stream;
+        http::request<http::string_body> req;
         beast::flat_buffer buffer;
         http::response<http::string_body> res;
-        http::read(stream, buffer, res);
-        const auto end = chrono::steady_clock::now();
-        elapsed = chrono::duration<double, milli>(end - start).count();
-        status = res.result_int();
-        stream.socket().shutdown(tcp::socket::shutdown_both);
-        return true;
-    } catch (const std::exception&) {
-        elapsed = 0;
-        status = 0;
-        return false;
-    }
+        std::function<void(bool, double, long)> cb;
+        std::chrono::steady_clock::time_point start;
+        std::string host;
+        std::string port;
+
+        session(net::io_context& ioc,
+                const std::string& host_,
+                const std::string& port_,
+                const std::string& target,
+                const std::string& body,
+                std::function<void(bool, double, long)> cb_)
+            : resolver(net::make_strand(ioc)),
+              stream(net::make_strand(ioc)),
+              cb(std::move(cb_)),
+              host(host_),
+              port(port_)
+        {
+            req.method(http::verb::post);
+            req.target(target);
+            req.version(11);
+            req.set(http::field::host, host);
+            req.set(http::field::content_type, "application/json");
+            req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
+            req.body() = body;
+            req.prepare_payload();
+        }
+
+        void run()
+        {
+            resolver.async_resolve(host, port,
+                beast::bind_front_handler(&session::on_resolve, shared_from_this()));
+        }
+
+        void on_resolve(beast::error_code ec, tcp::resolver::results_type results)
+        {
+            if (ec)
+                return fail(ec);
+
+            stream.async_connect(results,
+                beast::bind_front_handler(&session::on_connect, shared_from_this()));
+        }
+
+        void on_connect(beast::error_code ec, tcp::resolver::results_type::endpoint_type)
+        {
+            if (ec)
+                return fail(ec);
+
+            start = std::chrono::steady_clock::now();
+
+            http::async_write(stream, req,
+                beast::bind_front_handler(&session::on_write, shared_from_this()));
+        }
+
+        void on_write(beast::error_code ec, std::size_t)
+        {
+            if (ec)
+                return fail(ec);
+
+            http::async_read(stream, buffer, res,
+                beast::bind_front_handler(&session::on_read, shared_from_this()));
+        }
+
+        void on_read(beast::error_code ec, std::size_t)
+        {
+            if (ec)
+                return fail(ec);
+
+            auto end = std::chrono::steady_clock::now();
+            double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
+            long status = res.result_int();
+            beast::error_code ignored;
+            stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+            cb(true, elapsed, status);
+        }
+
+        void fail(beast::error_code)
+        {
+            cb(false, 0.0, 0);
+        }
+    };
+
+    auto u = parse_url(url);
+    std::make_shared<session>(ioc, u.host, u.port, u.target, payload, std::move(cb))->run();
 }
 
 struct Summary {
@@ -263,6 +330,9 @@ public:
         fallback_interval_ms = pace ? atoi(pace) : 1000;
 
         std::cout << "Configurations read" << std::endl;
+
+        io_thread = std::thread([this]{ ioc.run(); });
+
         for (int i = 0; i < 5; ++i) {
             workers.emplace_back([this]{ worker_loop(false); });
         }
@@ -273,6 +343,8 @@ public:
 
     ~PaymentService() {
         running = false;
+        ioc.stop();
+        if (io_thread.joinable()) io_thread.join();
         for (auto& t : workers) {
             if (t.joinable()) t.join();
         }
@@ -335,14 +407,7 @@ private:
                 this_thread::sleep_for(chrono::milliseconds(100));
                 continue;
             }
-            auto [processor, ts] = process_payment(p, isFallbackPool);
-            if (processor == "try_again") {
-                enqueue(p);
-            }
-            else
-            {
-                store_processed(p, processor, ts);
-            }
+            process_payment(p, isFallbackPool);
             if (isFallbackPool) {
                 this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms));
             }
@@ -372,7 +437,7 @@ private:
         return true;
     }
 
-    pair<string, string> process_payment(const Payment& p, bool isFallbackPool)
+    void process_payment(const Payment& p, bool isFallbackPool)
     {
         const auto start = get_now();
 
@@ -382,34 +447,28 @@ private:
         string primary_label = (primary == default_processor ? "default" : "fallback");
         string secondary_label = (secondary == default_processor ? "default" : "fallback");
 
-        double elapsed = 0.0; long code = 0;
-        bool ok = send_to_processor(primary, payload, elapsed, code);
-        handle_response(primary, elapsed, code, !isFallbackPool);
-        if (ok) {
-
-            record_profiler_value("process_payment", start);
-            return {primary_label, ts};
-        }
-        if (code == 422)
-        {
-            record_profiler_value("process_payment", start);
-            return {"discard", ts};
-        }
-
-        double elapsed2 = 0.0; long code2 = 0;
-        ok = send_to_processor(secondary, payload, elapsed2, code2);
-        handle_response(secondary, elapsed2, code2, false);
-        if (ok) {
-            record_profiler_value("process_payment", start);
-            return {secondary_label, ts};
-        }
-        if (code == 422)
-        {
-            record_profiler_value("process_payment", start);
-            return {"discard", ts};
-        }
-        record_profiler_value("process_payment", start);
-        return {"try_again", ts};
+        send_to_processor(primary, payload, ioc,
+            [this, p, payload, ts, primary, primary_label, secondary, secondary_label, isFallbackPool, start]
+            (bool ok, double elapsed, long code) {
+                handle_response(primary, elapsed, code, !isFallbackPool);
+                if (ok) {
+                    store_processed(p, primary_label, ts);
+                    record_profiler_value("process_payment", start);
+                } else if (code == 422) {
+                    record_profiler_value("process_payment", start);
+                } else {
+                    send_to_processor(secondary, payload, ioc,
+                        [this, p, ts, secondary, secondary_label, start](bool ok2, double elapsed2, long code2) {
+                            handle_response(secondary, elapsed2, code2, false);
+                            if (ok2) {
+                                store_processed(p, secondary_label, ts);
+                            } else if (code2 != 422) {
+                                enqueue(p);
+                            }
+                            record_profiler_value("process_payment", start);
+                        });
+                }
+            });
     }
 
     void handle_response(const string& url, double elapsed, long code, bool from_main_pool)
@@ -516,22 +575,23 @@ private:
         return {sb.GetString(), requestedAt};
     }
 
-    static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
+    static void send_to_processor(const string& base, const string& payload, net::io_context& ioc,
+                                  function<void(bool, double, long)> cb) {
         const auto start_method = get_now();
 
         const string url = base + "/payments";
-        bool ok = beast_post(url, payload, elapsed, code);
+        beast_post(url, payload, ioc,
+            [cb, start_method, url](bool ok, double elapsed, long code) {
+                record_profiler_value("send_to_processor", start_method);
+                const auto now = get_local_time();
 
-        record_profiler_value("send_to_processor", start_method);
+                if constexpr (const_performance_metrics_enabled)
+                {
+                    std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
+                }
 
-        const auto now = get_local_time();
-
-        if constexpr (const_performance_metrics_enabled)
-        {
-            std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
-        }
-
-        return (ok && code == 200);
+                cb(ok && code == 200, elapsed, code);
+            });
     }
 
     void store_processed(const Payment& p, const string& processor, const string& timestamp) const
@@ -568,6 +628,9 @@ private:
     vector<Payment> queue;
     atomic<size_t> head{0};
     atomic<size_t> tail{0};
+    net::io_context ioc;
+    net::executor_work_guard<net::io_context::executor_type> work_guard{net::make_work_guard(ioc)};
+    thread io_thread;
     vector<thread> workers;
     string default_processor;
     string fallback_processor;
