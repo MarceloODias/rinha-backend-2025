@@ -209,6 +209,7 @@ public:
         options.create_if_missing = true;
         options.IncreaseParallelism();
         options.OptimizeLevelStyleCompaction();
+        optimize_db(options);
         DB* pdb;
 
         std::cout << "Opening RocksDB database..." << std::endl;
@@ -238,8 +239,12 @@ public:
         const char* pace = getenv("FALLBACK_POOL_INTERVAL_MS");
         fallback_interval_ms = pace ? atoi(pace) : 1000;
 
+        std::cout << "FALLBACK_POOL_INTERVAL_MS=" << fallback_interval_ms << std::endl;
+
         const char* workerCount = getenv("WORKER_COUNT");
         int workerCountInt = workerCount ? atoi(workerCount) : 5;
+
+        std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
 
         std::cout << "Configurations read" << std::endl;
         for (int i = 0; i < workerCountInt; ++i) {
@@ -592,9 +597,50 @@ private:
         key_builder << timestamp << '|' << p.correlationId;
         const string key = key_builder.str();
 
-        processed_db->Put(rocksdb::WriteOptions(), key, sb.GetString());
+        // Write options
+        rocksdb::WriteOptions wopt;
+        wopt.sync = false;          // don’t fsync each write
+        wopt.disableWAL = false;    // set true only if you accept data loss on crash
+
+        processed_db->Put(wopt, key, sb.GetString());
 
         record_profiler_value("store_processed", start);
+    }
+
+    void optimize_db(Options opts)
+    {
+        // Parallelism / background work
+        opts.IncreaseParallelism(std::thread::hardware_concurrency());
+        opts.max_background_jobs = std::max(4u, std::thread::hardware_concurrency());
+        opts.max_subcompactions = 2;
+
+        // Compaction strategy
+        opts.compaction_style = rocksdb::kCompactionStyleLevel;
+        opts.level0_file_num_compaction_trigger = 8;
+        opts.level0_slowdown_writes_trigger = 20;
+        opts.level0_stop_writes_trigger = 36;
+        opts.target_file_size_base = 64ULL << 20; // 64MB
+
+        // Compression
+        opts.compression_per_level = {rocksdb::kNoCompression, rocksdb::kLZ4Compression,
+                                      rocksdb::kLZ4Compression, rocksdb::kLZ4Compression,
+                                      rocksdb::kZSTD}; // adjust to your #levels
+
+        // Sync pacing
+        opts.bytes_per_sync = 1<<20;      // 1MB
+        opts.wal_bytes_per_sync = 1<<20;  // 1MB
+        opts.use_fsync = false;
+
+        // Write-thread behavior
+        opts.enable_pipelined_write = true;
+        opts.unordered_write = true;
+        opts.allow_concurrent_memtable_write = true;
+        opts.enable_write_thread_adaptive_yield = true;
+
+        // Memtable sizing
+        opts.write_buffer_size = 128ULL << 20; // 128MB
+        opts.max_write_buffer_number = 4;
+        opts.min_write_buffer_number_to_merge = 1;
     }
 
     unique_ptr<rocksdb::DB> processed_db;
@@ -767,6 +813,8 @@ int main(const int, char**) {
     if (env_concurrency != nullptr) {
         concurrency = std::stoi(env_concurrency);
     }
+
+    std::cout << "CONCURRENCY=" << concurrency << std::endl;
 
     const auto settings = make_shared<Settings>();
     settings->set_port(8080);
