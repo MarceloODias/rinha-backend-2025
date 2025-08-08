@@ -209,7 +209,7 @@ public:
         options.create_if_missing = true;
         options.IncreaseParallelism();
         options.OptimizeLevelStyleCompaction();
-        optimize_db(options);
+        // optimize_db(options);
         DB* pdb;
 
         std::cout << "Opening RocksDB database..." << std::endl;
