@@ -32,7 +32,7 @@ COPY restbed/ /restbed/
 # Build and manually install Restbed
 RUN mkdir -p /restbed/build && \
     cd /restbed/build && \
-    cmake -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake -mtune=skylake -pipe -fno-plt -ffast-math -flto" .. && \
+    cmake -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -DNDEBUG" .. && \
     make && \
     make install && \
     cp -r ../distribution/include/* /usr/local/include/ && \
@@ -40,31 +40,6 @@ RUN mkdir -p /restbed/build && \
     ldconfig
 
 RUN strip /usr/local/lib/librestbed.a
-
-# Clone & build RocksDB
-RUN git clone --branch v10.4.2 --depth 1 https://github.com/facebook/rocksdb.git /opt/rocksdb && \
-    cd /opt/rocksdb && \
-    mkdir -p build && cd build && \
-    cmake .. \
-      -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake -mtune=skylake -pipe -fno-plt -ffast-math" \
-      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-      -DCMAKE_INSTALL_PREFIX=/usr/local \
-      -DWITH_GFLAGS=1 \
-      -DWITH_SNAPPY=1 \
-      -DWITH_ZLIB=1 \
-      -DWITH_BZ2=1 \
-      -DWITH_LZ4=1 \
-      -DWITH_ZSTD=1 \
-      -DROCKSDB_BUILD_TESTS=OFF \
-      -DWITH_GFLAGS=OFF \
-      -DBUILD_SHARED_LIBS=ON \
-      -DWITH_MEMENV=ON \
-      -DPORTABLE=1 \
-      -DUSE_RTTI=1 && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig && \
-    rm -rf /opt/rocksdb
 
 WORKDIR /usr/src/app
 
@@ -75,7 +50,7 @@ COPY include ./include
 # Build the project
 RUN mkdir -p build && \
     cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake -mtune=skylake -pipe -fno-plt -ffast-math -flto" .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -DNDEBUG" .. && \
     make
 
 RUN strip /usr/src/app/build/payments-service

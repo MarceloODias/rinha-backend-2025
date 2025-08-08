@@ -15,6 +15,7 @@
 #include <iostream>
 #include <limits>
 #include <cstdio>
+#include <unordered_map>
 
 #ifdef __linux__
 #include <pthread.h>
@@ -87,7 +88,7 @@ struct Summary {
 
 // ==== PROFILER ====
 
-std::unordered_map<string, std::atomic<long>> performance_data;
+unordered_map<string, std::atomic<long>> performance_data;
 std::unordered_map<string, std::atomic<long>> count_perf_data;
 
 std::chrono::high_resolution_clock::time_point get_now()
@@ -207,17 +208,27 @@ public:
         fallback_processor = fb ? string(fb) : default_processor;
         main_url = default_processor;
         test_url = fallback_processor;
+
         const char* fee = getenv("FEE_DIFFERENCE");
-        fee_difference = fee ? atof(fee) : 0.11;
+        fee_difference = fee ? atof(fee) : 3;
+
         const char* pace = getenv("FALLBACK_POOL_INTERVAL_MS");
         fallback_interval_ms = pace ? atoi(pace) : 1000;
+
+        const char* fallbackEnabledStr = getenv("FALLBACK_ENABLED");
+        fallback_enabled = fallbackEnabledStr ? atoi(fallbackEnabledStr) : true;
 
         std::cout << "FALLBACK_POOL_INTERVAL_MS=" << fallback_interval_ms << std::endl;
 
         const char* workerCount = getenv("WORKER_COUNT");
-        int workerCountInt = workerCount ? atoi(workerCount) : 5;
+        int workerCountInt = workerCount ? atoi(workerCount) : 1;
 
         std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
+
+        const char* maxWorkerCount = getenv("MAX_WORKER_COUNT");
+        worker_max_count = maxWorkerCount ? atoi(maxWorkerCount) : 2;
+
+        std::cout << "MAX_WORKER_COUNT=" << worker_max_count << std::endl;
 
         std::cout << "Configurations read" << std::endl;
         for (int i = 0; i < workerCountInt; ++i) {
@@ -229,6 +240,8 @@ public:
             workers.emplace_back([this]{ profiler_loop(); });
         }
         std::cout << "Threads started" << std::endl;
+
+        started = get_now();
     }
 
     ~PaymentService() {
@@ -315,7 +328,9 @@ private:
         last_fallback = get_now();
 
         while (running) {
-            Payment p; bool has = fetch_next(p);
+            size_t queue_length;
+            Payment p; bool has = fetch_next(p, queue_length);
+
             if (!has) {
                 this_thread::sleep_for(chrono::milliseconds(100));
                 continue;
@@ -324,7 +339,7 @@ private:
             bool isFallbackPool = false;
             const auto now = get_now();
             int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
-            if (!fallback_is_running && elapsed >= fallback_interval_ms) {
+            if (fallback_enabled && !fallback_is_running && elapsed >= fallback_interval_ms) {
                 fallback_is_running = true;
                 isFallbackPool = true;
                 if (const_performance_metrics_enabled)
@@ -350,18 +365,21 @@ private:
         }
     }
 
-    bool fetch_next(Payment& p) {
+    bool fetch_next(Payment& p, size_t& length) {
         const auto start = get_now();
 
         size_t idx;
         while (true) {
             size_t current_head = head.load(std::memory_order_acquire);
             size_t current_tail = tail.load(std::memory_order_acquire);
+
             if (current_head >= current_tail) {
+                length = 0;
                 return false;
             }
             if (head.compare_exchange_weak(current_head, current_head + 1, std::memory_order_acq_rel)) {
                 idx = current_head;
+                length = (current_tail - current_head) - 1;
                 break;
             }
         }
@@ -395,6 +413,11 @@ private:
         {
             record_profiler_value("process_payment", start);
             return {"discard", ts};
+        }
+
+        if (!fallback_enabled)
+        {
+            return {"try_again", ts};
         }
 
         double elapsed2 = 0.0; long code2 = 0;
@@ -431,7 +454,7 @@ private:
         else if (from_main_pool && code == 500 && fallback_down.load())
         {
             print_log("Primary processor is down, waiting for fallback to recover...");
-            this_thread::sleep_for(chrono::milliseconds(500));
+            this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
         }
         else
         {
@@ -452,6 +475,11 @@ private:
 
     void trigger_switch(const string& reason)
     {
+        if (!fallback_enabled)
+        {
+            return;
+        }
+
         swap(main_url, test_url);
 
         if (!const_performance_metrics_enabled)
@@ -464,6 +492,10 @@ private:
 
     void evaluate_switch()
     {
+        if (!fallback_enabled) {
+            return;
+        }
+
         const auto start = get_now();
 
         const double def = default_time_ms.load();
@@ -536,7 +568,7 @@ private:
         curl_wrapper.set_payload(url, payload); // dynamic update only
 
         const auto start = chrono::steady_clock::now();
-        CURLcode res = curl_easy_perform(curl);
+        const CURLcode res = curl_easy_perform(curl);
         const auto end = chrono::steady_clock::now();
 
         elapsed = chrono::duration<double, milli>(end - start).count();
@@ -553,7 +585,7 @@ private:
         return (res == CURLE_OK && code == 200);
     }
 
-    void store_processed(const Payment& p, const string& processor, const string& timestamp) const
+    void store_processed(const Payment& p, const string& processor, const string& timestamp)
     {
         const auto start = get_now();
 
@@ -577,7 +609,7 @@ private:
     };
     static constexpr size_t PROCESSED_CAPACITY = 50'000;
     mutable std::array<ProcessedSlot, PROCESSED_CAPACITY> processed{};
-    std::atomic<size_t> processed_index{0};
+    atomic<size_t> processed_index{0};
 
     vector<Payment> queue;
     atomic<size_t> head{0};
@@ -594,7 +626,10 @@ private:
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
     std::chrono::high_resolution_clock::time_point last_fallback;
+    std::chrono::high_resolution_clock::time_point started;
     bool fallback_is_running{false};
+    bool fallback_enabled{true};
+    int worker_max_count{2};
 };
 
 static shared_ptr<PaymentService> service;
