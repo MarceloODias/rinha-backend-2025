@@ -1,12 +1,12 @@
 # Rinha Backend 2025
 
 A high-performance C++ backend for payment processing, designed for the Rinha de Backend challenge.  
-Implements a REST API for payment submission and summary, with RocksDB for persistence, cURL for HTTP, and RapidJSON for fast JSON handling.
+Implements a REST API for payment submission and summary, with an in-memory store for the last 50k processed requests, cURL for HTTP, and RapidJSON for fast JSON handling.
 
 ## Features
 
 - **REST API** using [restbed](https://github.com/Corvusoft/restbed)
-- **Persistent storage** with [RocksDB](https://github.com/facebook/rocksdb)
+- **In-memory storage** for the most recent 50k processed payments
 - **High concurrency**: lock-free queue, multi-threaded workers
 - **Processor failover**: automatic fallback and switch logic
 - **Performance profiling** (optional)
@@ -37,7 +37,7 @@ Implements a REST API for payment submission and summary, with RocksDB for persi
 
 - **PaymentService**:
     - Manages a lock-free ring buffer queue for incoming payments.
-    - Worker threads process payments, send to processor(s), and store results in RocksDB.
+      - Worker threads process payments, send to processor(s), and store results in an internal ring buffer (50k entries).
     - Automatic failover: if the main processor fails, switches to fallback, and vice versa.
     - Uses atomic variables for thread safety.
 
@@ -46,8 +46,8 @@ Implements a REST API for payment submission and summary, with RocksDB for persi
       Example: `2024-06-07T15:23:45.123Z`
     - Formatting uses `std::put_time` and manual millisecond extraction.
 
-- **Persistence**:
-    - RocksDB stores processed payments with keys as `timestamp|correlationId`.
+- **Storage**:
+    - In-memory ring buffer stores the latest 50k processed payments.
     - Each record includes timestamp, amount, and processor used.
 
 - **HTTP/JSON**:
@@ -61,7 +61,6 @@ Implements a REST API for payment submission and summary, with RocksDB for persi
 
 ### Environment Variables
 
-- `DATABASE_PATH`: Path for RocksDB data (default: `data_`)
 - `PROCESSOR_URL`: Main processor URL (default: `http://localhost:8001`)
 - `FALLBACK_PROCESSOR_URL`: Fallback processor URL (default: same as main)
 - `FEE_DIFFERENCE`: Minimum improvement ratio to switch processors (default: `0.11`)
@@ -75,14 +74,13 @@ Implements a REST API for payment submission and summary, with RocksDB for persi
 **Dependencies:**
 - C++17 or newer
 - [restbed](https://github.com/Corvusoft/restbed)
-- [RocksDB](https://github.com/facebook/rocksdb)
 - [RapidJSON](https://github.com/Tencent/rapidjson)
 - [libcurl](https://curl.se/libcurl/)
 
 **Example (on macOS/Linux):**
 ```sh
 # Install dependencies (example for Ubuntu)
-sudo apt-get install librestbed-dev librocksdb-dev rapidjson-dev libcurl4-openssl-dev
+sudo apt-get install librestbed-dev rapidjson-dev libcurl4-openssl-dev
 
 # Build
 mkdir build && cd build
@@ -97,7 +95,7 @@ make
 
 - Thread pinning is only supported on Linux.
 - Millisecond-precision timestamps are used throughout for accurate event tracking.
-- The queue is lock-free for high throughput; RocksDB writes are not fsynced for performance (set `wopt.sync` if needed).
+- The queue and processed buffer are lock-free for high throughput.
 
 ---
 

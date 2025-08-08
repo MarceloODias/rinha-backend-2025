@@ -2,8 +2,7 @@
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
-#include <rocksdb/db.h>
-#include <rocksdb/options.h>
+#include <array>
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
@@ -15,6 +14,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <cstdio>
 
 #ifdef __linux__
 #include <pthread.h>
@@ -25,9 +25,6 @@ using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-using ROCKSDB_NAMESPACE::DB;
-using ROCKSDB_NAMESPACE::Options;
-using ROCKSDB_NAMESPACE::Status;
 
 constexpr bool const_performance_metrics_enabled = false;
 
@@ -202,30 +199,6 @@ public:
     PaymentService() {
         std::cout << "Initializing PaymentService v1.0..." << std::endl;
 
-        const char* db_folder = getenv("DATABASE_PATH");
-        string processed_db_path = db_folder ? string(db_folder) : "data_";
-
-        Options options;
-        options.create_if_missing = true;
-        options.IncreaseParallelism();
-        options.OptimizeLevelStyleCompaction();
-        // optimize_db(options);
-        DB* pdb;
-
-        std::cout << "Opening RocksDB database..." << std::endl;
-        const Status p_status = DB::Open(options, processed_db_path.append("processed_db_file"), &pdb);
-
-        std::cout << "Database opened. Checking the status..." << std::endl;
-
-        if (!p_status.ok()) {
-            std::cerr << "Failed to open processed_db: " << p_status.ToString() << std::endl;
-            throw runtime_error("Failed to open RocksDB database");
-        }
-
-        processed_db.reset(pdb);
-
-        std::cout << "Database started..." << std::endl;
-
         queue.resize(QUEUE_CAPACITY);
 
         const char* def = getenv("PROCESSOR_URL");
@@ -278,17 +251,25 @@ public:
         map<string, Summary> result;
         result["default"] = Summary();
         result["fallback"] = Summary();
-        string start = from + "|";
-        string end = to + "~";
-        unique_ptr<rocksdb::Iterator> it(processed_db->NewIterator(rocksdb::ReadOptions()));
-        for (it->Seek(start); it->Valid() && it->key().ToString() <= end; it->Next()) {
-            string value = it->value().ToString();
-            Document d; d.Parse(value.c_str());
-            string processor = d["processor"].GetString();
-            double amount = d["amount"].GetDouble();
-            auto& s = result[processor];
-            s.totalRequests++;
-            s.totalAmount += amount;
+
+        size_t limit = std::min(processed_index.load(std::memory_order_acquire), processed.size());
+        for (size_t i = 0; i < limit; ++i) {
+            const auto &slot = processed[i];
+            uint64_t seq1 = slot.seq.load(std::memory_order_acquire);
+            if (seq1 % 2 == 1) continue; // write in progress
+
+            string ts(slot.timestamp);
+            double amount = slot.amount;
+            char proc = slot.processor;
+
+            uint64_t seq2 = slot.seq.load(std::memory_order_acquire);
+            if (seq1 != seq2 || seq2 % 2 == 1) continue;
+
+            if (ts >= from && ts <= to) {
+                auto &s = result[proc == 'f' ? string("fallback") : string("default")];
+                s.totalRequests++;
+                s.totalAmount += amount;
+            }
         }
         return result;
     }
@@ -576,70 +557,28 @@ private:
     {
         const auto start = get_now();
 
-        // Reuse Document and buffer per thread
-        thread_local Document d;
-        d.SetObject();  // Clear any previous content
-        auto& a = d.GetAllocator();
-
-        d.AddMember("timestamp", StringRef(timestamp.c_str()), a);
-        d.AddMember("amount", p.amount, a);
-        d.AddMember("processor", StringRef(processor.c_str()), a);
-
-        thread_local StringBuffer sb;
-        sb.Clear();  // Important: clear buffer before reuse
-        Writer<StringBuffer> w(sb);
-        d.Accept(w);
-
-        // Key construction: thread-local stringstream to avoid reallocations
-        thread_local stringstream key_builder;
-        key_builder.str("");
-        key_builder.clear();
-        key_builder << timestamp << '|' << p.correlationId;
-        const string key = key_builder.str();
-
-        processed_db->Put(rocksdb::WriteOptions(), key, sb.GetString());
-
+        size_t idx = processed_index.fetch_add(1, std::memory_order_relaxed) % processed.size();
+        auto &slot = processed[idx];
+        uint64_t seq = slot.seq.load(std::memory_order_relaxed);
+        slot.seq.store(seq + 1, std::memory_order_release); // mark write in progress
+        std::snprintf(slot.timestamp, sizeof(slot.timestamp), "%s", timestamp.c_str());
+        slot.amount = p.amount;
+        slot.processor = (processor == "fallback" ? 'f' : 'd');
+        slot.seq.store(seq + 2, std::memory_order_release); // publish
 
         record_profiler_value("store_processed", start);
     }
 
-    void optimize_db(Options opts)
-    {
-        // Parallelism / background work
-        opts.IncreaseParallelism(std::thread::hardware_concurrency());
-        opts.max_background_jobs = std::max(4u, std::thread::hardware_concurrency());
-        opts.max_subcompactions = 2;
+    struct ProcessedSlot {
+        std::atomic<uint64_t> seq{0};
+        char timestamp[32];
+        double amount;
+        char processor;
+    };
+    static constexpr size_t PROCESSED_CAPACITY = 50'000;
+    mutable std::array<ProcessedSlot, PROCESSED_CAPACITY> processed{};
+    std::atomic<size_t> processed_index{0};
 
-        // Compaction strategy
-        opts.compaction_style = rocksdb::kCompactionStyleLevel;
-        opts.level0_file_num_compaction_trigger = 8;
-        opts.level0_slowdown_writes_trigger = 20;
-        opts.level0_stop_writes_trigger = 36;
-        opts.target_file_size_base = 64ULL << 20; // 64MB
-
-        // Compression
-        opts.compression_per_level = {rocksdb::kNoCompression, rocksdb::kLZ4Compression,
-                                      rocksdb::kLZ4Compression, rocksdb::kLZ4Compression,
-                                      rocksdb::kZSTD}; // adjust to your #levels
-
-        // Sync pacing
-        opts.bytes_per_sync = 1<<20;      // 1MB
-        opts.wal_bytes_per_sync = 1<<20;  // 1MB
-        opts.use_fsync = false;
-
-        // Write-thread behavior
-        opts.enable_pipelined_write = true;
-        opts.unordered_write = true;
-        opts.allow_concurrent_memtable_write = true;
-        opts.enable_write_thread_adaptive_yield = true;
-
-        // Memtable sizing
-        opts.write_buffer_size = 128ULL << 20; // 128MB
-        opts.max_write_buffer_number = 4;
-        opts.min_write_buffer_number_to_merge = 1;
-    }
-
-    unique_ptr<rocksdb::DB> processed_db;
     vector<Payment> queue;
     atomic<size_t> head{0};
     atomic<size_t> tail{0};

@@ -51,12 +51,5 @@ find_package(Threads REQUIRED)
 
 target_link_libraries(payments-service PRIVATE
         restbed
-        rocksdb
-        z
-        bz2
-        snappy
-        lz4
-        zstd
-        gflags
         curl
         Threads::Threads)
