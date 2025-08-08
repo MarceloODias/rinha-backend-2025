@@ -596,13 +596,9 @@ private:
         key_builder.clear();
         key_builder << timestamp << '|' << p.correlationId;
         const string key = key_builder.str();
+        
+        processed_db->Put(rocksdb::WriteOptions(), key, sb.GetString());
 
-        // Write options
-        rocksdb::WriteOptions wopt;
-        wopt.sync = false;          // don’t fsync each write
-        wopt.disableWAL = false;    // set true only if you accept data loss on crash
-
-        processed_db->Put(wopt, key, sb.GetString());
 
         record_profiler_value("store_processed", start);
     }
