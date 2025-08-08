@@ -596,7 +596,7 @@ private:
         key_builder.clear();
         key_builder << timestamp << '|' << p.correlationId;
         const string key = key_builder.str();
-        
+
         processed_db->Put(rocksdb::WriteOptions(), key, sb.GetString());
 
 
