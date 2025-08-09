@@ -2,24 +2,25 @@ version: '3.9'
 
 services:
   app1: &app
-    image: maruero/rinha-de-backend-2025:v1
+    image: maruero/rinha-de-backend-2025:socket
     hostname: app1
     environment:
       - PROCESSOR_URL=http://payment-processor-default:8080
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
-      - OTHER_INSTANCE_URL=http://app2:8080
+      - OTHER_INSTANCE_URL=/var/tmp/sockets/app2.sock
+      - SOCKET=/var/tmp/sockets/app1.sock
       - CONCURRENCY=2
       - WORKER_COUNT=2
-    ports:
-      - "8081:8080"
+    volumes:
+      - sockets:/var/tmp/sockets
     networks:
       - backend
       - payment-processor
     deploy:
       resources:
         limits:
-          cpus: "0.70"
-          memory: "167MB"
+          cpus: "0.50"
+          memory: "113MB"
 
   app2:
     <<: *app
@@ -27,16 +28,15 @@ services:
     environment:
       - PROCESSOR_URL=http://payment-processor-default:8080
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
-      - OTHER_INSTANCE_URL=http://app1:8080
+      - OTHER_INSTANCE_URL=/var/tmp/sockets/app1.sock
+      - SOCKET=/var/tmp/sockets/app2.sock
       - CONCURRENCY=2
       - WORKER_COUNT=2
-    ports:
-      - "8082:8080"
     deploy:
       resources:
         limits:
-          cpus: "0.70"
-          memory: "167MB"
+          cpus: "0.50"
+          memory: "113MB"
 
   haproxy:
     image: haproxy:alpine
@@ -45,6 +45,7 @@ services:
       - "9999:9999"
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - sockets:/var/tmp/sockets:rw
     depends_on:
       - app1
       - app2
@@ -53,8 +54,11 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.10"
-          memory: "16MB"
+          cpus: "0.50"
+          memory: "124MB"
+
+volumes:
+  sockets:
 
 networks:
   backend:

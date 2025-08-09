@@ -40,8 +40,8 @@ if(DEFINED ENV{DOCKER_ENV})
 else()
     message(STATUS "Configuring for local environment")
     # Include Restbed headers and libraries for local development
-    include_directories(/Users/admin/C/restbed/distribution/include)
-    link_directories(/Users/admin/C/restbed/distribution/library)
+    include_directories(restbed/distribution/include)
+    link_directories(restbed/distribution/library)
 endif()
 
 

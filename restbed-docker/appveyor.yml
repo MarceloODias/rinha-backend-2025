@@ -1,0 +1,26 @@
+version: 4.8.0/{branch}-{build}
+image:
+- Visual Studio 2022
+- Ubuntu
+- macOS
+configuration: Release
+platform: Any CPU
+
+init:
+- cmd: '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x86_x64'
+install:
+- git submodule update --init --recursive
+- mkdir build
+- cd build
+build_script:
+- sh: >-
+    cmake ..
+
+    make
+- cmd: >-
+    cmake -G "Visual Studio 17 2022" -DBUILD_SSL=NO -DBUILD_TESTS=YES ..
+
+    cmake --build . --target ALL_BUILD --config Release
+test_script:
+- ctest
+deploy: off

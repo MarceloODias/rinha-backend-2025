@@ -1,3 +1,6 @@
+#define BUILD_IPC 1
+
+
 #include <restbed>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
@@ -14,18 +17,14 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
-#include <cstdio>
 #include <unordered_map>
-
-#ifdef __linux__
-#include <pthread.h>
-#include <sched.h>
-#endif
+#include <cstdio>
+#include <sys/stat.h>
+#include <unistd.h>   // ::unlink
 
 using namespace restbed;
 using namespace std;
 using namespace rapidjson;
-
 
 constexpr bool const_performance_metrics_enabled = false;
 
@@ -173,25 +172,6 @@ void print_log(const string& message)
 }
 
 // ==== PROFILER ====
-
-void pin_thread_to_core(int core_id, string group) {
-#ifdef __linux__
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(core_id, &cpuset);
-
-    pthread_t current_thread = pthread_self();
-    int rc = pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &cpuset);
-    if (rc != 0) {
-        std::cerr << "Failed to set thread affinity. " << std::endl;
-    } else {
-        std::cout << group << " thread pinned to core " << core_id << std::endl;
-    }
-#else
-    // On macOS or unsupported systems, just print a message.
-    std::cout << group << " thread pinning is not supported on this platform - cpu: " << core_id << std::endl;
-#endif
-}
 
 class PaymentService {
 public:
@@ -635,14 +615,6 @@ private:
 static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
-    thread_local bool pinned = false;
-    if (!pinned) {
-        static std::atomic<int> next_cpu{0};
-        int cpu_id = next_cpu++ % (std::thread::hardware_concurrency() / 2); // Pin to half of available cores
-        // pin_thread_to_core(cpu_id, "rest");
-        pinned = true;
-    }
-
     const auto request = session->get_request();
     const int length = request->get_header("Content-Length", 0);
 
@@ -750,7 +722,7 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     rapidjson::Writer<rapidjson::StringBuffer> writer(sb);
     d.Accept(writer);
 
-    session->yield(200, sb.GetString(), {
+    session->close(200, sb.GetString(), {
         { "Content-Type", "application/json" },
         { "Content-Length", to_string(sb.GetSize())},
         {"Connection", "keep-alive"}
@@ -760,6 +732,13 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 int main(const int, char**) {
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
+
+    const auto socket = std::getenv("SOCKET");
+
+    // remove stale socket from previous run (important for UDS)
+    ::unlink(socket);  // safe if it doesn't exist
+    ::mkdir("/var/tmp/sockets", 0777); // best-effort
+    ::umask(0000);
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
@@ -787,7 +766,10 @@ int main(const int, char**) {
     std::cout << "CONCURRENCY=" << concurrency << std::endl;
 
     const auto settings = make_shared<Settings>();
-    settings->set_port(8080);
+
+    // settings->set_port(8080);
+    settings->set_ipc_path(socket);
+
     settings->set_worker_limit(concurrency);
     settings->set_keep_alive(true);
     settings->set_default_header("Connection", "keep-alive");

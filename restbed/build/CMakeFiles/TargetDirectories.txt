@@ -1,0 +1,8 @@
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/restbed-static.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/restbed-shared.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/edit_cache.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/rebuild_cache.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/list_install_components.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/install.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/install/local.dir
+/Users/admin/Projects/rinha/payment-middleware/restbed/build/CMakeFiles/install/strip.dir

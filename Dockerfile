@@ -27,12 +27,12 @@ RUN rm -rf /var/lib/apt/lists/* && \
 
 
 # Clone Restbed without dependencies
-COPY restbed/ /restbed/
+COPY restbed-docker/ /restbed/
 
 # Build and manually install Restbed
 RUN mkdir -p /restbed/build && \
     cd /restbed/build && \
-    cmake -DBUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -DNDEBUG" .. && \
+    cmake -DBUILD_TESTS=OFF -DBUILD_IPC=YES -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native -flto -DNDEBUG" .. && \
     make && \
     make install && \
     cp -r ../distribution/include/* /usr/local/include/ && \
@@ -55,6 +55,7 @@ RUN mkdir -p build && \
 
 RUN strip /usr/src/app/build/payments-service
 
+RUN mkdir /var/tmp/sockets
 EXPOSE 8080
 
 CMD ["./build/payments-service"]
