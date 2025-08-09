@@ -12,6 +12,8 @@ services:
       - WORKER_COUNT=2
     volumes:
       - sockets:/var/tmp/sockets
+    ports:
+      - "8080:8080"
     networks:
       - backend
       - payment-processor

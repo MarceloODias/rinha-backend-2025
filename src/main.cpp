@@ -767,7 +767,7 @@ int main(const int, char**) {
 
     const auto settings = make_shared<Settings>();
 
-    // settings->set_port(8080);
+    settings->set_port(8080);
     settings->set_ipc_path(socket);
 
     settings->set_worker_limit(concurrency);
