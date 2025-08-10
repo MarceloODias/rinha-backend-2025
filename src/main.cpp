@@ -190,7 +190,7 @@ public:
         test_url = fallback_processor;
 
         const char* fee = getenv("FEE_DIFFERENCE");
-        fee_difference = fee ? atof(fee) : 3;
+        fee_difference = fee ? atof(fee) : 0.11;
 
         const char* pace = getenv("FALLBACK_POOL_INTERVAL_MS");
         fallback_interval_ms = pace ? atoi(pace) : 1000;
@@ -204,11 +204,6 @@ public:
         int workerCountInt = workerCount ? atoi(workerCount) : 1;
 
         std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
-
-        const char* maxWorkerCount = getenv("MAX_WORKER_COUNT");
-        worker_max_count = maxWorkerCount ? atoi(maxWorkerCount) : 2;
-
-        std::cout << "MAX_WORKER_COUNT=" << worker_max_count << std::endl;
 
         std::cout << "Configurations read" << std::endl;
         for (int i = 0; i < workerCountInt; ++i) {
@@ -558,8 +553,8 @@ private:
 
         if constexpr (const_performance_metrics_enabled)
         {
-            const auto now = get_local_time();
-            std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
+            // const auto now = get_local_time();
+            // std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
         }
 
         return (res == CURLE_OK && code == 200);
@@ -609,7 +604,6 @@ private:
     std::chrono::high_resolution_clock::time_point started;
     bool fallback_is_running{false};
     bool fallback_enabled{true};
-    int worker_max_count{2};
 };
 
 static shared_ptr<PaymentService> service;
