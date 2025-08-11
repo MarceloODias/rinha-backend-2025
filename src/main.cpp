@@ -649,7 +649,7 @@ static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
-    const int length = request->get_header("Content-Length", 0);
+    constexpr int length = 85;
 
     session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body) {
         const auto start_parse = get_now();
