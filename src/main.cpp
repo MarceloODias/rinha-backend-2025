@@ -28,7 +28,7 @@ using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = true;
+constexpr bool const_performance_metrics_enabled = false;
 
 struct Payment {
     string correlationId;
