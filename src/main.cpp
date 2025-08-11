@@ -6,6 +6,7 @@
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
 #include <array>
+#include <cstring>
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
@@ -34,6 +35,11 @@ constexpr bool const_performance_metrics_enabled = false;
 struct Payment {
     string correlationId;
     double amount{};
+};
+
+struct RawPayment {
+    std::array<uint8_t, 70> data{};
+    size_t size{};
 };
 
 static size_t write_callback(void* contents, const size_t size, const size_t nmemb, void* userp) {
@@ -268,10 +274,10 @@ public:
         }
     }
 
-    void enqueue(const Payment& p) {
+    void enqueue(const RawPayment& r) {
         const auto start = get_now();
         const size_t idx = tail.fetch_add(1, std::memory_order_acq_rel);
-        queue[idx % queue.size()] = p;
+        queue[idx % queue.size()] = r;
 
         record_profiler_value("put-queue", start);
     }
@@ -346,7 +352,7 @@ private:
 
         while (running) {
             size_t queue_length;
-            Payment p; bool has = fetch_next(p, queue_length);
+            RawPayment r; bool has = fetch_next(r, queue_length);
 
             if (!has) {
                 this_thread::sleep_for(chrono::milliseconds(100));
@@ -361,9 +367,20 @@ private:
                 isFallbackPool = true;
             }
 
+            const auto start_parse = get_now();
+            thread_local rapidjson::MemoryPoolAllocator<> allocator;
+            allocator.Clear();
+            thread_local rapidjson::Document d(&allocator);
+            d.SetObject();
+            d.Parse<rapidjson::kParseDefaultFlags>(reinterpret_cast<const char*>(r.data.data()), r.size);
+            Payment p;
+            p.correlationId = d["correlationId"].GetString();
+            p.amount = d["amount"].GetDouble();
+            record_profiler_value("parsing", start_parse);
+
             auto [processor, ts] = process_payment(p, isFallbackPool);
             if (processor == "try_again") {
-                enqueue(p);
+                enqueue(r);
             }
             else
             {
@@ -378,7 +395,7 @@ private:
         }
     }
 
-    bool fetch_next(Payment& p, size_t& length) {
+    bool fetch_next(RawPayment& r, size_t& length) {
         const auto start = get_now();
 
         size_t idx;
@@ -397,7 +414,7 @@ private:
             }
         }
 
-        p = queue[idx % queue.size()];
+        r = queue[idx % queue.size()];
 
         record_profiler_value("fetch-queue", start);
 
@@ -616,7 +633,7 @@ private:
     mutable std::array<ProcessedSlot, PROCESSED_CAPACITY> processed{};
     atomic<size_t> processed_index{0};
 
-    vector<Payment> queue;
+    vector<RawPayment> queue;
     atomic<size_t> head{0};
     atomic<size_t> tail{0};
     vector<thread> workers;
@@ -643,25 +660,11 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
 
     session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body) {
-        const auto start_parse = get_now();
+        RawPayment r;
+        r.size = body.size();
+        std::memcpy(r.data.data(), body.data(), body.size());
 
-        // Reuse allocator and Document per thread
-        thread_local rapidjson::MemoryPoolAllocator<> allocator;
-        allocator.Clear();  // Ensure clean allocator per request
-
-        thread_local rapidjson::Document d(&allocator);
-        d.SetObject();  // Clear previous JSON document
-
-        // Safe to parse non-null-terminated buffer using length
-        d.Parse<rapidjson::kParseDefaultFlags>(reinterpret_cast<const char*>(body.data()), body.size());
-
-        Payment p;
-        p.correlationId = d["correlationId"].GetString();
-        p.amount = d["amount"].GetDouble();
-
-        record_profiler_value("parsing", start_parse);
-
-        service->enqueue(p);
+        service->enqueue(r);
 
         static const Bytes response;
         static const multimap<string, string> headers = {
