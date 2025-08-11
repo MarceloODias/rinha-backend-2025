@@ -21,12 +21,14 @@
 #include <cstdio>
 #include <sys/stat.h>
 #include <unistd.h>   // ::unlink
+#include <fstream>
+#include <unordered_set>
 
 using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = false;
+constexpr bool const_performance_metrics_enabled = true;
 
 struct Payment {
     string correlationId;
@@ -95,6 +97,38 @@ std::chrono::high_resolution_clock::time_point get_now()
     return std::chrono::high_resolution_clock::now();
 }
 
+void cpuinfo() {
+    try
+    {
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        if (!cpuinfo) {
+            std::cerr << "Failed to open /proc/cpuinfo\n";
+            return;
+        }
+
+        std::string line;
+        while (std::getline(cpuinfo, line)) {
+            // Match "flags" (x86) or "Features" (ARM) at line start
+            if (line.rfind("flags", 0) == 0 || line.rfind("Features", 0) == 0) {
+                std::istringstream iss(line);
+                std::string key, colon;
+                iss >> key >> colon; // consume "flags" ":" or "Features" ":"
+                std::unordered_set<std::string> seen;
+                std::string flag;
+                while (iss >> flag) {
+                    if (seen.insert(flag).second) {
+                        std::cout << flag << '\n';
+                    }
+                }
+                break; // we got the first CPU's flags; done
+            }
+        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error reading /proc/cpuinfo: " << e.what() << "\n";
+    }
+}
+
 void init_profiler()
 {
     for (const std::string& key : {
@@ -103,6 +137,17 @@ void init_profiler()
     }) {
         performance_data.emplace(key, 0);
         count_perf_data.emplace(key, 0);
+    }
+}
+
+void reset_profiler()
+{
+    for (const std::string& key : {
+        "parsing", "put-queue", "fetch-queue", "process_payment", "create_processor_payload", "send_to_processor",
+        "store_processed", "evaluate_switch", "handle_response"
+    }) {
+        performance_data.at(key).store(0);
+        count_perf_data.at(key).store(0);
     }
 }
 
@@ -139,6 +184,8 @@ string get_profiler_result()
                 << performance_data[fst].load(std::memory_order_relaxed) << "\n";
         }
     }
+
+    reset_profiler();
 
     const string response_str = response.str();
     return response_str;
@@ -197,6 +244,10 @@ public:
 
         const char* fallbackEnabledStr = getenv("FALLBACK_ENABLED");
         fallback_enabled = fallbackEnabledStr ? atoi(fallbackEnabledStr) : true;
+        if (!fallback_enabled)
+        {
+            fallback_down.store(true);
+        }
 
         std::cout << "FALLBACK_POOL_INTERVAL_MS=" << fallback_interval_ms << std::endl;
 
@@ -286,7 +337,7 @@ private:
         {
             const string response_str = get_profiler_result();
             std::cout << response_str << std::endl;
-            this_thread::sleep_for(chrono::seconds(10));
+            this_thread::sleep_for(chrono::seconds(5));
         }
     }
 
@@ -317,10 +368,6 @@ private:
             if (fallback_enabled && !fallback_is_running && elapsed >= fallback_interval_ms) {
                 fallback_is_running = true;
                 isFallbackPool = true;
-                if (const_performance_metrics_enabled)
-                {
-                    std::cout << "Trying fallback at: " << get_local_time() << std::endl;
-                }
             }
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
@@ -414,26 +461,28 @@ private:
     void handle_response(const string& url, double elapsed, long code, bool from_main_pool)
     {
         const auto start = get_now();
-        if (!from_main_pool) {
-            if (code == 500) fallback_down.store(true);
-            else fallback_down.store(false);
-        }
-
-        if (code == 500) {
-            elapsed = numeric_limits<double>::max();
-        }
-        update_time(url, elapsed);
-        if (from_main_pool && code == 500 && !fallback_down.load()) {
-            trigger_switch("Main down");
-        }
-        else if (from_main_pool && code == 500 && fallback_down.load())
+        if (fallback_enabled)
         {
-            print_log("Primary processor is down, waiting for fallback to recover...");
-            this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
-        }
-        else
-        {
-            evaluate_switch();
+            if (!from_main_pool) {
+                if (code == 500) fallback_down.store(true);
+                else fallback_down.store(false);
+            }
+            if (code == 500) {
+                elapsed = numeric_limits<double>::max();
+            }
+            update_time(url, elapsed);
+            if (from_main_pool && code == 500 && !fallback_down.load()) {
+                trigger_switch("Main down");
+            }
+            else if (from_main_pool && code == 500 && fallback_down.load())
+            {
+                print_log("Primary processor is down, waiting for fallback to recover...");
+                this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
+            }
+            else
+            {
+                evaluate_switch();
+            }
         }
 
         record_profiler_value("handle_response", start);
@@ -550,12 +599,6 @@ private:
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
 
         record_profiler_value("send_to_processor", start_method);
-
-        if constexpr (const_performance_metrics_enabled)
-        {
-            // const auto now = get_local_time();
-            // std::cout << code << " " << elapsed << " " << url << " at " << now << std::endl;
-        }
 
         return (res == CURLE_OK && code == 200);
     }
@@ -724,6 +767,8 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 }
 
 int main(const int, char**) {
+    cpuinfo();
+
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
 
