@@ -672,10 +672,14 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
         service->enqueue(p);
 
-        session->yield(202, {
+        static const string response = "";
+        static const auto headers = {
             {"Content-Type", "application/json"},
+            {"Content-Length", "0"},
             {"Connection", "keep-alive"}
-        });
+        };
+
+        session->yield(202, response, headers);
     });
 }
 
