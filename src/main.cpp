@@ -672,11 +672,13 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
         service->enqueue(p);
 
+        static const Bytes response;
         static const multimap<string, string> headers = {
+            {"Content-Length", "0"},
             {"Connection", "keep-alive"}
         };
 
-        session->close(202, headers);
+        session->yield(202, response, headers);
     });
 }
 
