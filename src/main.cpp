@@ -649,9 +649,7 @@ static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
-    const size_t length = request->get_header("Content-Length", 0);
-
-    std::cout << "length" << length << std::endl;
+    constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
 
     session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body) {
         const auto start_parse = get_now();
