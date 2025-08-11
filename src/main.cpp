@@ -23,6 +23,7 @@
 #include <unistd.h>   // ::unlink
 #include <fstream>
 #include <unordered_set>
+#include <iostream>
 
 using namespace restbed;
 using namespace std;
@@ -100,29 +101,20 @@ std::chrono::high_resolution_clock::time_point get_now()
 void cpuinfo() {
     try
     {
-        std::ifstream cpuinfo("/proc/cpuinfo");
-        if (!cpuinfo) {
-            std::cerr << "Failed to open /proc/cpuinfo\n";
-            return;
-        }
+        // Initialize CPU feature detection
+        __builtin_cpu_init();
 
-        std::string line;
-        while (std::getline(cpuinfo, line)) {
-            // Match "flags" (x86) or "Features" (ARM) at line start
-            if (line.rfind("flags", 0) == 0 || line.rfind("Features", 0) == 0) {
-                std::istringstream iss(line);
-                std::string key, colon;
-                iss >> key >> colon; // consume "flags" ":" or "Features" ":"
-                std::unordered_set<std::string> seen;
-                std::string flag;
-                while (iss >> flag) {
-                    if (seen.insert(flag).second) {
-                        std::cout << flag << '\n';
-                    }
-                }
-                break; // we got the first CPU's flags; done
-            }
-        }
+        auto has = [](const char* f) {
+            return __builtin_cpu_supports(f) ? "YES" : "NO";
+        };
+
+        std::cout << "Runtime CPU features (host):\n";
+        std::cout << "  AVX2: " << has("avx2") << "\n";
+        std::cout << "  AVX : " << has("avx")  << "\n";
+        std::cout << "  FMA : " << has("fma")  << "\n";
+        std::cout << "  BMI2: " << has("bmi2") << "\n";
+        std::cout << "  SSE4.2: " << has("sse4.2") << "\n";
+        std::cout << "  AES : " << has("aes")  << "\n";
 
     } catch (const std::exception& e) {
         std::cerr << "Error reading /proc/cpuinfo: " << e.what() << "\n";
