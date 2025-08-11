@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <fstream>
 #include <unordered_set>
+#include <vector>
 
 using namespace restbed;
 using namespace std;
@@ -220,8 +221,15 @@ public:
 
     PaymentService() {
         std::cout << "Initializing PaymentService v1.0..." << std::endl;
+        const char* workerCount = getenv("WORKER_COUNT");
+        int workerCountInt = workerCount ? atoi(workerCount) : 1;
 
-        queue.resize(QUEUE_CAPACITY);
+        queues.reserve(workerCountInt);
+        for (int i = 0; i < workerCountInt; ++i) {
+            auto q = std::make_unique<WorkerQueue>();
+            q->queue.resize(QUEUE_CAPACITY);
+            queues.emplace_back(std::move(q));
+        }
 
         const char* def = getenv("PROCESSOR_URL");
         const char* fb = getenv("FALLBACK_PROCESSOR_URL");
@@ -245,14 +253,11 @@ public:
         }
         std::cout << "FALLBACK_ENABLED=" << fallback_enabled << std::endl;
 
-        const char* workerCount = getenv("WORKER_COUNT");
-        int workerCountInt = workerCount ? atoi(workerCount) : 1;
-
         std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
 
         std::cout << "Configurations read" << std::endl;
         for (int i = 0; i < workerCountInt; ++i) {
-            workers.emplace_back([this]{ worker_loop(); });
+            workers.emplace_back([this, i]{ worker_loop(i); });
         }
 
         if (const_performance_metrics_enabled)
@@ -271,12 +276,17 @@ public:
         }
     }
 
-    void enqueue(const RawPayment& r) {
+    void enqueue(size_t queue_idx, const RawPayment& r) {
         const auto start = get_now();
-        const size_t idx = tail.fetch_add(1, std::memory_order_acq_rel);
-        queue[idx % queue.size()] = r;
+        WorkerQueue& q = *queues[queue_idx % queues.size()];
+        size_t pos = q.tail.fetch_add(1, std::memory_order_acq_rel);
+        q.queue[pos % q.queue.size()] = r;
 
         record_profiler_value("put-queue", start);
+    }
+
+    size_t queue_count() const {
+        return queues.size();
     }
 
     map<string, Summary> query(const string& from, const string& to) const
@@ -335,7 +345,7 @@ private:
         }
     }
 
-    void worker_loop() {
+    void worker_loop(size_t worker_id) {
         thread_local bool pinned = false;
         if (!pinned) {
             static std::atomic<int> next_cpu{0};
@@ -349,7 +359,7 @@ private:
 
         while (running) {
             size_t queue_length;
-            RawPayment r; bool has = fetch_next(r, queue_length);
+            RawPayment r; bool has = fetch_next(worker_id, r, queue_length);
 
             if (!has) {
                 this_thread::sleep_for(chrono::milliseconds(100));
@@ -377,7 +387,7 @@ private:
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
             if (processor == "try_again") {
-                enqueue(r);
+                enqueue(worker_id, r);
             }
             else
             {
@@ -392,26 +402,27 @@ private:
         }
     }
 
-    bool fetch_next(RawPayment& r, size_t& length) {
+    bool fetch_next(size_t worker_id, RawPayment& r, size_t& length) {
         const auto start = get_now();
 
+        WorkerQueue& q = *queues[worker_id];
         size_t idx;
         while (true) {
-            size_t current_head = head.load(std::memory_order_acquire);
-            size_t current_tail = tail.load(std::memory_order_acquire);
+            size_t current_head = q.head.load(std::memory_order_acquire);
+            size_t current_tail = q.tail.load(std::memory_order_acquire);
 
             if (current_head >= current_tail) {
                 length = 0;
                 return false;
             }
-            if (head.compare_exchange_weak(current_head, current_head + 1, std::memory_order_acq_rel)) {
+            if (q.head.compare_exchange_weak(current_head, current_head + 1, std::memory_order_acq_rel)) {
                 idx = current_head;
                 length = (current_tail - current_head) - 1;
                 break;
             }
         }
 
-        r = queue[idx % queue.size()];
+        r = q.queue[idx % q.queue.size()];
 
         record_profiler_value("fetch-queue", start);
 
@@ -673,10 +684,13 @@ private:
     static constexpr size_t PROCESSED_CAPACITY = 50'000;
     mutable std::array<ProcessedSlot, PROCESSED_CAPACITY> processed{};
     atomic<size_t> processed_index{0};
+    struct WorkerQueue {
+        vector<RawPayment> queue;
+        atomic<size_t> head{0};
+        atomic<size_t> tail{0};
+    };
 
-    vector<RawPayment> queue;
-    atomic<size_t> head{0};
-    atomic<size_t> tail{0};
+    vector<unique_ptr<WorkerQueue>> queues;
     vector<thread> workers;
     string default_processor;
     string fallback_processor;
@@ -702,13 +716,15 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
     //size_t length = request->get_header("Content-Length", 0);
+    static std::atomic<size_t> rr{0};
 
-    session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body) {
+    session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
         RawPayment r;
         r.size = body.size();
         std::memcpy(r.data.data(), body.data(), body.size());
 
-        service->enqueue(r);
+        size_t idx = rr.fetch_add(1, std::memory_order_relaxed);
+        service->enqueue(idx % service->queue_count(), r);
 
         static const Bytes response;
         static const multimap<string, string> headers = {
