@@ -672,10 +672,8 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
         service->enqueue(p);
 
-        static const string response = R"({"status": "Accepted"})";
-        session->yield(202, response, {
+        session->yield(202, {
             {"Content-Type", "application/json"},
-            {"Content-Length", to_string(response.size())},
             {"Connection", "keep-alive"}
         });
     });
