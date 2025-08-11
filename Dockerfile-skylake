@@ -32,7 +32,7 @@ COPY restbed-docker/ /restbed/
 # Build and manually install Restbed
 RUN mkdir -p /restbed/build && \
     cd /restbed/build && \
-    cmake -DBUILD_TESTS=OFF -DBUILD_IPC=YES -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake" .. && \
+    cmake -DBUILD_TESTS=OFF -DBUILD_IPC=YES -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake -mtune=skylake -pipe -fno-plt -ffast-math -flto" .. && \
     make && \
     make install && \
     cp -r ../distribution/include/* /usr/local/include/ && \
@@ -50,7 +50,7 @@ COPY include ./include
 # Build the project
 RUN mkdir -p build && \
     cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake" .. && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG -march=skylake -mtune=skylake -pipe -fno-plt -ffast-math -flto" .. && \
     make
 
 RUN strip /usr/src/app/build/payments-service
