@@ -17,20 +17,17 @@
 #include <sstream>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <unordered_map>
-#include <cstdio>
 #include <sys/stat.h>
-#include <unistd.h>   // ::unlink
+#include <unistd.h>
 #include <fstream>
 #include <unordered_set>
-#include <iostream>
 
 using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = false;
+constexpr bool const_performance_metrics_enabled = true;
 
 struct Payment {
     string correlationId;
@@ -234,19 +231,19 @@ public:
         test_url = fallback_processor;
 
         const char* fee = getenv("FEE_DIFFERENCE");
-        fee_difference = fee ? atof(fee) : 0.11;
+        fee_difference = fee ? atof(fee) : 3;
 
         const char* pace = getenv("FALLBACK_POOL_INTERVAL_MS");
         fallback_interval_ms = pace ? atoi(pace) : 1000;
+        std::cout << "FALLBACK_POOL_INTERVAL_MS=" << fallback_interval_ms << std::endl;
 
         const char* fallbackEnabledStr = getenv("FALLBACK_ENABLED");
         fallback_enabled = fallbackEnabledStr ? atoi(fallbackEnabledStr) : true;
         if (!fallback_enabled)
         {
-            fallback_down.store(true);
+            fallback_down = true;
         }
-
-        std::cout << "FALLBACK_POOL_INTERVAL_MS=" << fallback_interval_ms << std::endl;
+        std::cout << "FALLBACK_ENABLED=" << fallback_enabled << std::endl;
 
         const char* workerCount = getenv("WORKER_COUNT");
         int workerCountInt = workerCount ? atoi(workerCount) : 1;
@@ -260,7 +257,7 @@ public:
 
         if (const_performance_metrics_enabled)
         {
-            workers.emplace_back([this]{ profiler_loop(); });
+            // workers.emplace_back([this]{ profiler_loop(); });
         }
         std::cout << "Threads started" << std::endl;
 
@@ -433,7 +430,12 @@ private:
 
         double elapsed = 0.0; long code = 0;
         bool ok = send_to_processor(primary, payload, elapsed, code);
-        handle_response(primary, elapsed, code, !isFallbackPool);
+        if (isFallbackPool)
+        {
+            fallback_evaluated = false;
+        }
+
+        handle_response(primary, elapsed, code);
         if (ok) {
 
             record_profiler_value("process_payment", start);
@@ -452,7 +454,7 @@ private:
 
         double elapsed2 = 0.0; long code2 = 0;
         ok = send_to_processor(secondary, payload, elapsed2, code2);
-        handle_response(secondary, elapsed2, code2, false);
+        handle_response(secondary, elapsed2, code2);
         if (ok) {
             record_profiler_value("process_payment", start);
             return {secondary_label, ts};
@@ -466,31 +468,54 @@ private:
         return {"try_again", ts};
     }
 
-    void handle_response(const string& url, double elapsed, long code, bool from_main_pool)
+    void handle_response(const string& url, const double elapsed, const long code)
     {
         const auto start = get_now();
         if (fallback_enabled)
         {
-            if (!from_main_pool) {
-                if (code == 500) fallback_down.store(true);
-                else fallback_down.store(false);
+            const bool using_default_as_main = (main_url == default_processor);
+            const bool default_called = (url == default_processor);
+
+            if (code == 500)
+            {
+                if (default_called) default_down = true;
+                else fallback_down = true;
+
+                if (default_down && fallback_down)
+                {
+                    print_log("Both is down, waiting to recover... " + get_local_time());
+                    this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
+                }
+                else if (default_down && !fallback_down && using_default_as_main)
+                {
+                    trigger_switch("Main down");
+                }
+                else if (!default_down && fallback_down && !using_default_as_main)
+                {
+                    trigger_switch("Fallback down");
+                }
+                return;
             }
-            if (code == 500) {
-                elapsed = numeric_limits<double>::max();
+
+            if (default_called && default_down)
+            {
+                default_down = false;
+                if (fallback_down)
+                {
+                    trigger_switch("Default recovered");
+                }
             }
+            else if (!default_called && fallback_down)
+            {
+                fallback_down = false;
+                if (default_down)
+                {
+                    trigger_switch("Fallback recovered");
+                }
+            }
+
             update_time(url, elapsed);
-            if (from_main_pool && code == 500 && !fallback_down.load()) {
-                trigger_switch("Main down");
-            }
-            else if (from_main_pool && code == 500 && fallback_down.load())
-            {
-                print_log("Primary processor is down, waiting for fallback to recover...");
-                this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
-            }
-            else
-            {
-                evaluate_switch();
-            }
+            evaluate_switch();
         }
 
         record_profiler_value("handle_response", start);
@@ -499,9 +524,9 @@ private:
     void update_time(const string& url, double elapsed)
     {
         if (url == default_processor) {
-            default_time_ms.store(elapsed);
+            default_time_ms = elapsed;
         } else if (url == fallback_processor) {
-            fallback_time_ms.store(elapsed);
+            fallback_time_ms = elapsed;
         }
     }
 
@@ -524,21 +549,30 @@ private:
 
     void evaluate_switch()
     {
-        if (!fallback_enabled) {
+        if (!fallback_enabled || fallback_evaluated) {
             return;
         }
+        fallback_evaluated = true;
 
         const auto start = get_now();
 
-        const double def = default_time_ms.load();
-        const double fb = fallback_time_ms.load();
+        const double def = default_time_ms;
+        const double fb = fallback_time_ms;
         if (def == 0 || fb == 0) return;
-        const double improvement = (def - fb) / def;
+        const double improvement = def / fb; // def= 6ms, fb= 2ms, def / fb= 3
         const bool using_default = (main_url == default_processor);
         if (fb < def && improvement >= fee_difference) {
-            if (using_default) trigger_switch("Fallback better");
+            if (using_default)
+            {
+                std::cout << "def: " << def << " fb: " << fb << std::endl;
+                trigger_switch("Fallback better");
+            }
         } else {
-            if (!using_default) trigger_switch("Main better");
+            if (!using_default)
+            {
+                std::cout << "def: " << def << " fb: " << fb << std::endl;
+                trigger_switch("Main better");
+            }
         }
 
         record_profiler_value("evaluate_switch", start);
@@ -602,6 +636,13 @@ private:
         elapsed = chrono::duration<double, milli>(end - start).count();
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
 
+        /*
+        if constexpr (const_performance_metrics_enabled)
+        {
+            print_log(url + " - " + to_string(code) + " - " + to_string(elapsed) + "ms" + " " + get_local_time());
+        }
+        */
+
         record_profiler_value("send_to_processor", start_method);
 
         return (res == CURLE_OK && code == 200);
@@ -641,9 +682,10 @@ private:
     string fallback_processor;
     string main_url;
     string test_url;
-    atomic<double> default_time_ms{0.0};
-    atomic<double> fallback_time_ms{0.0};
-    atomic<bool> fallback_down{false};
+    double default_time_ms{0.0};
+    double fallback_time_ms{0.0};
+    bool fallback_down{false};
+    bool default_down{false};
     double fee_difference{0.0};
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
@@ -651,6 +693,7 @@ private:
     std::chrono::high_resolution_clock::time_point started;
     bool fallback_is_running{false};
     bool fallback_enabled{true};
+    bool fallback_evaluated{true};
 };
 
 static shared_ptr<PaymentService> service;
@@ -658,6 +701,7 @@ static shared_ptr<PaymentService> service;
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
+    //size_t length = request->get_header("Content-Length", 0);
 
     session->fetch(length, [](const shared_ptr<Session>& session, const Bytes& body) {
         RawPayment r;
