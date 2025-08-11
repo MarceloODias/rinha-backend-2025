@@ -101,21 +101,20 @@ std::chrono::high_resolution_clock::time_point get_now()
 void cpuinfo() {
     try
     {
+#if defined(__GNUC__) && !defined(__clang__)
         // Initialize CPU feature detection
         __builtin_cpu_init();
 
-        auto has = [](const char* f) {
-            return __builtin_cpu_supports(f) ? "YES" : "NO";
-        };
-
         std::cout << "Runtime CPU features (host):\n";
-        std::cout << "  AVX2: " << has("avx2") << "\n";
-        std::cout << "  AVX : " << has("avx")  << "\n";
-        std::cout << "  FMA : " << has("fma")  << "\n";
-        std::cout << "  BMI2: " << has("bmi2") << "\n";
-        std::cout << "  SSE4.2: " << has("sse4.2") << "\n";
-        std::cout << "  AES : " << has("aes")  << "\n";
-
+        std::cout << "  AVX2: " << __builtin_cpu_supports("avx2") << "\n";
+        std::cout << "  AVX : " << __builtin_cpu_supports("avx")  << "\n";
+        std::cout << "  FMA : " << __builtin_cpu_supports("fma")  << "\n";
+        std::cout << "  BMI2: " << __builtin_cpu_supports("bmi2") << "\n";
+        std::cout << "  SSE4.2: " << __builtin_cpu_supports("sse4.2") << "\n";
+        std::cout << "  AES : " << __builtin_cpu_supports("aes")  << "\n";
+#else
+        std::cout << "CPU feature detection not supported on this compiler\n";
+#endif
     } catch (const std::exception& e) {
         std::cerr << "Error reading /proc/cpuinfo: " << e.what() << "\n";
     }
