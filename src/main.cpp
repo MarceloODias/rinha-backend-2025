@@ -673,7 +673,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
         service->enqueue(p);
 
         static const string response = "";
-        static const auto headers = {
+        static const multimap<string, string> headers = {
             {"Content-Type", "application/json"},
             {"Content-Length", "0"},
             {"Connection", "keep-alive"}
