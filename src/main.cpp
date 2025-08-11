@@ -539,33 +539,29 @@ private:
     static pair<string, string> create_processor_payload(const Payment& p) {
         const auto start = get_now();
 
-        // ---- Timestamp formatting ----
-        auto const now = chrono::system_clock::now();
+        // ---- Fast timestamp formatting ----
+        char requestedAt[32];
+        auto now = chrono::system_clock::now();
         time_t t = chrono::system_clock::to_time_t(now);
         tm tm{};
         gmtime_r(&t, &tm);
-        auto const ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
-
-        // Reuse stringstream per thread
-        thread_local stringstream timestamp_ss;
-        timestamp_ss.str("");
-        timestamp_ss.clear();
-
-        timestamp_ss << put_time(&tm, "%Y-%m-%dT%H:%M:%S");
-        timestamp_ss << '.' << setw(3) << setfill('0') << ms.count() << 'Z';
-        const string requestedAt = timestamp_ss.str();
+        auto ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        snprintf(requestedAt, sizeof(requestedAt),
+                 "%04d-%02d-%02dT%02d:%02d:%02d.%03lldZ",
+                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<long long>(ms.count()));
 
         // ---- JSON Building ----
         thread_local Document d;
-        d.SetObject();  // Reset for reuse
+        d.SetObject();
         auto& a = d.GetAllocator();
 
-        d.AddMember("correlationId", StringRef(p.correlationId.c_str()), a);
+        d.AddMember("correlationId", StringRef(p.correlationId.c_str(), p.correlationId.size()), a);
         d.AddMember("amount", p.amount, a);
-        d.AddMember("requestedAt", StringRef(requestedAt.c_str()), a);
+        d.AddMember("requestedAt", StringRef(requestedAt, strlen(requestedAt)), a);
 
         thread_local StringBuffer sb;
-        sb.Clear();  // Reuse buffer
+        sb.Clear();
         Writer<StringBuffer> w(sb);
         d.Accept(w);
 
