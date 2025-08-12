@@ -686,7 +686,7 @@ private:
     {
         const auto start = get_now();
 
-        const size_t idx = processed_index;
+        const size_t idx = ++processed_index;
         auto &slot = processed[idx];
 
         slot.timestamp = timestamp;
