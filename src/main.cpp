@@ -307,7 +307,8 @@ public:
         }
     }
 
-    void enqueue(size_t queue_idx, const RawPayment& r) {
+    void enqueue(size_t queue_idx, const RawPayment& r) const
+    {
         const auto start = get_now();
         WorkerQueue& q = *queues[queue_idx % queues.size()];
         {
@@ -331,7 +332,7 @@ public:
         uint64_t from_ms = parse_timestamp_ms(from);
         uint64_t to_ms = parse_timestamp_ms(to);
 
-        size_t limit = std::min(processed_index.load(std::memory_order_relaxed), processed.size());
+        size_t limit = std::min(processed_index, processed.size());
         for (size_t i = 0; i < limit; ++i) {
             const auto &slot = processed[i];
 
@@ -685,7 +686,7 @@ private:
     {
         const auto start = get_now();
 
-        size_t idx = processed_index.fetch_add(1, std::memory_order_relaxed);
+        const size_t idx = processed_index;
         auto &slot = processed[idx];
 
         slot.timestamp = timestamp;
@@ -702,7 +703,9 @@ private:
     };
     static constexpr size_t PROCESSED_CAPACITY = 50'000;
     mutable std::array<ProcessedSlot, PROCESSED_CAPACITY> processed{};
-    atomic<size_t> processed_index{0};
+
+    size_t processed_index{0};
+
     struct WorkerQueue {
         vector<RawPayment> queue;
         size_t head{0};
@@ -737,16 +740,21 @@ static shared_ptr<PaymentService> service;
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
-    //size_t length = request->get_header("Content-Length", 0);
-    static atomic<size_t> queue_index = {0};
+
+    //static atomic<size_t> queue_index = {0};
+    static size_t queue_index = {0};
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
         RawPayment r;
         r.size = body.size();
         std::memcpy(r.data.data(), body.data(), body.size());
 
+        /*
         const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
         service->enqueue(idx % service->queue_count(), r);
+        */
+
+        service->enqueue(0, r);
 
         static const Bytes response;
         static const multimap<string, string> headers = {
