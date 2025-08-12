@@ -255,6 +255,10 @@ public:
             q->queue.resize(QUEUE_CAPACITY);
             queues.emplace_back(std::move(q));
         }
+        std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
+
+        const char* interIntervalCount = getenv("INTER_INTERVAL");
+        inter_interval = interIntervalCount ? atoi(interIntervalCount) : 0;
 
         const char* def = getenv("PROCESSOR_URL");
         const char* fb = getenv("FALLBACK_PROCESSOR_URL");
@@ -277,8 +281,6 @@ public:
             fallback_down = true;
         }
         std::cout << "FALLBACK_ENABLED=" << fallback_enabled << std::endl;
-
-        std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
 
         std::cout << "Configurations read" << std::endl;
         for (int i = 0; i < workerCountInt; ++i) {
@@ -422,6 +424,11 @@ private:
             {
                 fallback_is_running = false;
                 last_fallback = get_now();
+            }
+
+            if (inter_interval > 0)
+            {
+                this_thread::sleep_for(chrono::milliseconds(inter_interval));
             }
         }
     }
@@ -722,6 +729,7 @@ private:
     bool fallback_is_running{false};
     bool fallback_enabled{true};
     bool fallback_evaluated{true};
+    int inter_interval{0};
 };
 
 static shared_ptr<PaymentService> service;
