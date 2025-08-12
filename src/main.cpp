@@ -97,6 +97,11 @@ struct Summary {
     double totalAmount = 0.0;
 };
 
+struct SummaryPair {
+    Summary def;
+    Summary fb;
+};
+
 // ==== PROFILER ====
 
 unordered_map<string, std::atomic<long>> performance_data;
@@ -317,11 +322,9 @@ public:
         return queues.size();
     }
 
-    map<string, Summary> query(const string& from, const string& to) const
+    SummaryPair query(const string& from, const string& to) const
     {
-        map<string, Summary> result;
-        result["default"] = Summary();
-        result["fallback"] = Summary();
+        SummaryPair result;
 
         uint64_t from_ms = parse_timestamp_ms(from);
         uint64_t to_ms = parse_timestamp_ms(to);
@@ -332,9 +335,9 @@ public:
 
             uint64_t ts = slot.timestamp;
             if (ts >= from_ms && ts <= to_ms) {
-                auto &s = result[slot.processor == 'f' ? string("fallback") : string("default")];
-                s.totalRequests++;
-                s.totalAmount += slot.amount;
+                Summary* s = slot.processor == 'f' ? &result.fb : &result.def;
+                s->totalRequests++;
+                s->totalAmount += slot.amount;
             }
         }
         return result;
@@ -747,8 +750,8 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     });
 }
 
-map<string, Summary> call_other_instance(const string& other, const string& from, const string& to) {
-    map<string, Summary> result; result["default"] = Summary(); result["fallback"] = Summary();
+SummaryPair call_other_instance(const string& other, const string& from, const string& to) {
+    SummaryPair result;
     string url = other + "/payments-summary?from=" + from + "&to=" + to + "&internal=true";
     string body;
     CURL* curl = curl_easy_init();
@@ -763,13 +766,13 @@ map<string, Summary> call_other_instance(const string& other, const string& from
         Document d; d.Parse(body.c_str());
         if (d.HasMember("default")) {
             auto& def = d["default"];
-            result["default"].totalRequests = def["totalRequests"].GetUint64();
-            result["default"].totalAmount = def["totalAmount"].GetDouble();
+            result.def.totalRequests = def["totalRequests"].GetUint64();
+            result.def.totalAmount = def["totalAmount"].GetDouble();
         }
         if (d.HasMember("fallback")) {
             auto& fb = d["fallback"];
-            result["fallback"].totalRequests = fb["totalRequests"].GetUint64();
-            result["fallback"].totalAmount = fb["totalAmount"].GetDouble();
+            result.fb.totalRequests = fb["totalRequests"].GetUint64();
+            result.fb.totalAmount = fb["totalAmount"].GetDouble();
         }
     }
     return result;
@@ -787,7 +790,7 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
         other_url = getenv("OTHER_INSTANCE_URL");
     }
 
-    std::future<map<string, Summary>> other_future;
+    std::future<SummaryPair> other_future;
     if (other_url != nullptr) {
         other_future = std::async(std::launch::async, [other_url, from, to] {
             return call_other_instance(other_url, from, to);
@@ -797,10 +800,10 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     auto res = service->query(from, to);
     if (other_url != nullptr) {
         auto otherRes = other_future.get();
-        res["default"].totalRequests += otherRes["default"].totalRequests;
-        res["default"].totalAmount += otherRes["default"].totalAmount;
-        res["fallback"].totalRequests += otherRes["fallback"].totalRequests;
-        res["fallback"].totalAmount += otherRes["fallback"].totalAmount;
+        res.def.totalRequests += otherRes.def.totalRequests;
+        res.def.totalAmount += otherRes.def.totalAmount;
+        res.fb.totalRequests += otherRes.fb.totalRequests;
+        res.fb.totalAmount += otherRes.fb.totalAmount;
     }
 
     // === JSON serialization with reusable RapidJSON components ===
@@ -813,13 +816,13 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 
     // Build default object
     rapidjson::Value def(rapidjson::kObjectType);
-    def.AddMember("totalRequests", res["default"].totalRequests, a);
-    def.AddMember("totalAmount", res["default"].totalAmount, a);
+    def.AddMember("totalRequests", res.def.totalRequests, a);
+    def.AddMember("totalAmount", res.def.totalAmount, a);
 
     // Build fallback object
     rapidjson::Value fb(rapidjson::kObjectType);
-    fb.AddMember("totalRequests", res["fallback"].totalRequests, a);
-    fb.AddMember("totalAmount", res["fallback"].totalAmount, a);
+    fb.AddMember("totalRequests", res.fb.totalRequests, a);
+    fb.AddMember("totalAmount", res.fb.totalAmount, a);
 
     d.AddMember("default", def, a);
     d.AddMember("fallback", fb, a);
