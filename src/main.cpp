@@ -742,7 +742,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
 
-        std::thread(std::launch::async, [body]
+        std::thread([body]
         {
             RawPayment r;
             r.size = body.size();
