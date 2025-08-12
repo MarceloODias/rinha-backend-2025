@@ -7,21 +7,36 @@ services:
     environment:
       - PROCESSOR_URL=http://payment-processor-default:8080
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
+      - OTHER_INSTANCE_URL=http://app2:8080
       - SOCKET=/var/tmp/sockets/app1.sock
       - CONCURRENCY=2
       - WORKER_COUNT=2
     volumes:
       - sockets:/var/tmp/sockets
-    ports:
-      - "8080:8080"
     networks:
       - backend
       - payment-processor
     deploy:
       resources:
         limits:
-          cpus: "1.0"
-          memory: "226MB"
+          cpus: "0.50"
+          memory: "113MB"
+
+  app2:
+    <<: *app
+    hostname: app2
+    environment:
+      - PROCESSOR_URL=http://payment-processor-default:8080
+      - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
+      - OTHER_INSTANCE_URL=http://app1:8080
+      - SOCKET=/var/tmp/sockets/app2.sock
+      - CONCURRENCY=2
+      - WORKER_COUNT=2
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: "113MB"
 
   haproxy:
     image: haproxy:alpine
@@ -29,10 +44,11 @@ services:
     ports:
       - "9999:9999"
     volumes:
-      - ./haproxy-single.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
       - sockets:/var/tmp/sockets:rw
     depends_on:
       - app1
+      - app2
     networks:
       - backend
     deploy:

@@ -889,6 +889,7 @@ int main(const int, char**) {
     rest_service.publish(summary);
     rest_service.publish(profiler);
     rest_service.start(settings);
+
     curl_global_cleanup();
     return EXIT_SUCCESS;
 }
