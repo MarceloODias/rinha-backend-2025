@@ -7,6 +7,7 @@
 #include <rapidjson/stringbuffer.h>
 #include <array>
 #include <cstring>
+#include <cstdio>
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
@@ -14,6 +15,8 @@
 #include <map>
 #include <memory>
 #include <cstdlib>
+#include <ctime>
+#include <future>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -163,6 +166,21 @@ string get_local_time()
     return ss.str();
 }
 
+static uint64_t parse_timestamp_ms(const string& ts)
+{
+    std::tm tm{};
+    int ms = 0;
+    if (sscanf(ts.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d.%3dZ",
+               &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+               &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms) != 7) {
+        return 0;
+    }
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    time_t seconds = timegm(&tm);
+    return static_cast<uint64_t>(seconds) * 1000ULL + static_cast<uint64_t>(ms);
+}
+
 string get_profiler_result()
 {
     stringstream response;
@@ -295,18 +313,18 @@ public:
         result["default"] = Summary();
         result["fallback"] = Summary();
 
+        uint64_t from_ms = parse_timestamp_ms(from);
+        uint64_t to_ms = parse_timestamp_ms(to);
+
         size_t limit = std::min(processed_index.load(std::memory_order_relaxed), processed.size());
         for (size_t i = 0; i < limit; ++i) {
             const auto &slot = processed[i];
 
-            string ts(slot.timestamp);
-            double amount = slot.amount;
-            char proc = slot.processor;
-
-            if (ts >= from && ts <= to) {
-                auto &s = result[proc == 'f' ? string("fallback") : string("default")];
+            uint64_t ts = slot.timestamp;
+            if (ts >= from_ms && ts <= to_ms) {
+                auto &s = result[slot.processor == 'f' ? string("fallback") : string("default")];
                 s.totalRequests++;
-                s.totalAmount += amount;
+                s.totalAmount += slot.amount;
             }
         }
         return result;
@@ -423,7 +441,7 @@ private:
         return true;
     }
 
-    pair<string, string> process_payment(const Payment& p, bool isFallbackPool)
+    pair<string, uint64_t> process_payment(const Payment& p, bool isFallbackPool)
     {
         const auto start = get_now();
 
@@ -583,20 +601,21 @@ private:
         record_profiler_value("evaluate_switch", start);
     }
 
-    static pair<string, string> create_processor_payload(const Payment& p) {
+    static pair<string, uint64_t> create_processor_payload(const Payment& p) {
         const auto start = get_now();
 
         // ---- Fast timestamp formatting ----
         char requestedAt[32];
         auto now = chrono::system_clock::now();
-        time_t t = chrono::system_clock::to_time_t(now);
+        long long ms_since_epoch = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+        time_t t = ms_since_epoch / 1000;
         tm tm{};
         gmtime_r(&t, &tm);
-        auto ms = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        long long ms_part = ms_since_epoch % 1000;
         snprintf(requestedAt, sizeof(requestedAt),
                  "%04d-%02d-%02dT%02d:%02d:%02d.%03lldZ",
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                 tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<long long>(ms.count()));
+                 tm.tm_hour, tm.tm_min, tm.tm_sec, ms_part);
 
         // ---- JSON Building ----
         thread_local Document d;
@@ -614,7 +633,7 @@ private:
 
         record_profiler_value("create_processor_payload", start);
 
-        return {sb.GetString(), requestedAt};
+        return {sb.GetString(), static_cast<uint64_t>(ms_since_epoch)};
     }
 
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
@@ -653,14 +672,14 @@ private:
         return (res == CURLE_OK && code == 200);
     }
 
-    void store_processed(const Payment& p, const string& processor, const string& timestamp)
+    void store_processed(const Payment& p, const string& processor, uint64_t timestamp)
     {
         const auto start = get_now();
 
         size_t idx = processed_index.fetch_add(1, std::memory_order_relaxed);
         auto &slot = processed[idx];
 
-        std::snprintf(slot.timestamp, sizeof(slot.timestamp), "%s", timestamp.c_str());
+        slot.timestamp = timestamp;
         slot.amount = p.amount;
         slot.processor = (processor == "fallback" ? 'f' : 'd');
 
@@ -668,7 +687,7 @@ private:
     }
 
     struct ProcessedSlot {
-        char timestamp[32];
+        uint64_t timestamp;
         double amount;
         char processor;
     };
@@ -761,17 +780,26 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     string to = request->get_query_parameter("to");
     string internal = request->get_query_parameter("internal", "false");
 
-    auto res = service->query(from, to);
+    const char* other_url = nullptr;
+    if (internal != "true")
+    {
+        other_url = getenv("OTHER_INSTANCE_URL");
+    }
 
-    if (internal != "true") {
-        const char* other = getenv("OTHER_INSTANCE_URL");
-        if (other != nullptr) {
-            auto otherRes = call_other_instance(other, from, to);
-            res["default"].totalRequests += otherRes["default"].totalRequests;
-            res["default"].totalAmount += otherRes["default"].totalAmount;
-            res["fallback"].totalRequests += otherRes["fallback"].totalRequests;
-            res["fallback"].totalAmount += otherRes["fallback"].totalAmount;
-        }
+    std::future<map<string, Summary>> other_future;
+    if (other_url != nullptr) {
+        other_future = std::async(std::launch::async, [other_url, from, to] {
+            return call_other_instance(other_url, from, to);
+        });
+    }
+
+    auto res = service->query(from, to);
+    if (other_url != nullptr) {
+        auto otherRes = other_future.get();
+        res["default"].totalRequests += otherRes["default"].totalRequests;
+        res["default"].totalAmount += otherRes["default"].totalAmount;
+        res["fallback"].totalRequests += otherRes["fallback"].totalRequests;
+        res["fallback"].totalAmount += otherRes["fallback"].totalAmount;
     }
 
     // === JSON serialization with reusable RapidJSON components ===
