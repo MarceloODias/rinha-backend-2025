@@ -28,7 +28,7 @@ using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = true;
+constexpr bool const_performance_metrics_enabled = false;
 
 struct Payment {
     string correlationId;
@@ -279,7 +279,7 @@ public:
     void enqueue(size_t queue_idx, const RawPayment& r) {
         const auto start = get_now();
         WorkerQueue& q = *queues[queue_idx % queues.size()];
-        size_t pos = q.tail.fetch_add(1, std::memory_order_acq_rel);
+        size_t pos = q.tail++;
         q.queue[pos % q.queue.size()] = r;
 
         record_profiler_value("put-queue", start);
@@ -295,18 +295,13 @@ public:
         result["default"] = Summary();
         result["fallback"] = Summary();
 
-        size_t limit = std::min(processed_index.load(std::memory_order_acquire), processed.size());
+        size_t limit = std::min(processed_index.load(std::memory_order_relaxed), processed.size());
         for (size_t i = 0; i < limit; ++i) {
             const auto &slot = processed[i];
-            uint64_t seq1 = slot.seq.load(std::memory_order_acquire);
-            if (seq1 % 2 == 1) continue; // write in progress
 
             string ts(slot.timestamp);
             double amount = slot.amount;
             char proc = slot.processor;
-
-            uint64_t seq2 = slot.seq.load(std::memory_order_acquire);
-            if (seq1 != seq2 || seq2 % 2 == 1) continue;
 
             if (ts >= from && ts <= to) {
                 auto &s = result[proc == 'f' ? string("fallback") : string("default")];
@@ -408,18 +403,17 @@ private:
         WorkerQueue& q = *queues[worker_id];
         size_t idx;
         while (true) {
-            size_t current_head = q.head.load(std::memory_order_acquire);
-            size_t current_tail = q.tail.load(std::memory_order_acquire);
+            size_t current_head = q.head;
+            size_t current_tail = q.tail;
 
             if (current_head >= current_tail) {
                 length = 0;
                 return false;
             }
-            if (q.head.compare_exchange_weak(current_head, current_head + 1, std::memory_order_acq_rel)) {
-                idx = current_head;
-                length = (current_tail - current_head) - 1;
-                break;
-            }
+            q.head++;
+            idx = current_head;
+            length = (current_tail - current_head) - 1;
+            break;
         }
 
         r = q.queue[idx % q.queue.size()];
@@ -663,20 +657,17 @@ private:
     {
         const auto start = get_now();
 
-        size_t idx = processed_index.fetch_add(1, std::memory_order_relaxed) % processed.size();
+        size_t idx = processed_index.fetch_add(1, std::memory_order_relaxed);
         auto &slot = processed[idx];
-        uint64_t seq = slot.seq.load(std::memory_order_relaxed);
-        slot.seq.store(seq + 1, std::memory_order_release); // mark write in progress
+
         std::snprintf(slot.timestamp, sizeof(slot.timestamp), "%s", timestamp.c_str());
         slot.amount = p.amount;
         slot.processor = (processor == "fallback" ? 'f' : 'd');
-        slot.seq.store(seq + 2, std::memory_order_release); // publish
 
         record_profiler_value("store_processed", start);
     }
 
     struct ProcessedSlot {
-        std::atomic<uint64_t> seq{0};
         char timestamp[32];
         double amount;
         char processor;
@@ -686,8 +677,8 @@ private:
     atomic<size_t> processed_index{0};
     struct WorkerQueue {
         vector<RawPayment> queue;
-        atomic<size_t> head{0};
-        atomic<size_t> tail{0};
+        size_t head{0};
+        size_t tail{0};
     };
 
     vector<unique_ptr<WorkerQueue>> queues;
@@ -716,14 +707,14 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
     //size_t length = request->get_header("Content-Length", 0);
-    static std::atomic<size_t> rr{0};
+    static atomic<size_t> queue_index = {0};
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
         RawPayment r;
         r.size = body.size();
         std::memcpy(r.data.data(), body.data(), body.size());
 
-        size_t idx = rr.fetch_add(1, std::memory_order_relaxed);
+        const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
         service->enqueue(idx % service->queue_count(), r);
 
         static const Bytes response;
