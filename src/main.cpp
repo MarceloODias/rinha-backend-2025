@@ -26,6 +26,8 @@
 #include <fstream>
 #include <unordered_set>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
 
 using namespace restbed;
 using namespace std;
@@ -289,6 +291,10 @@ public:
 
     ~PaymentService() {
         running = false;
+        for (auto& q : queues) {
+            std::lock_guard<std::mutex> lock(q->mtx);
+            q->cv.notify_all();
+        }
         for (auto& t : workers) {
             if (t.joinable()) t.join();
         }
@@ -297,8 +303,12 @@ public:
     void enqueue(size_t queue_idx, const RawPayment& r) {
         const auto start = get_now();
         WorkerQueue& q = *queues[queue_idx % queues.size()];
-        size_t pos = q.tail++;
-        q.queue[pos % q.queue.size()] = r;
+        {
+            std::lock_guard<std::mutex> lock(q.mtx);
+            size_t pos = q.tail++;
+            q.queue[pos % q.queue.size()] = r;
+        }
+        q.cv.notify_one();
 
         record_profiler_value("put-queue", start);
     }
@@ -371,12 +381,10 @@ private:
         last_fallback = get_now();
 
         while (running) {
-            size_t queue_length;
-            RawPayment r; bool has = fetch_next(worker_id, r, queue_length);
-
+            RawPayment r;
+            bool has = fetch_next(worker_id, r);
             if (!has) {
-                this_thread::sleep_for(chrono::milliseconds(100));
-                continue;
+                break;
             }
 
             bool isFallbackPool = false;
@@ -415,25 +423,16 @@ private:
         }
     }
 
-    bool fetch_next(size_t worker_id, RawPayment& r, size_t& length) {
+    bool fetch_next(size_t worker_id, RawPayment& r) {
         const auto start = get_now();
 
         WorkerQueue& q = *queues[worker_id];
-        size_t idx;
-        while (true) {
-            size_t current_head = q.head;
-            size_t current_tail = q.tail;
-
-            if (current_head >= current_tail) {
-                length = 0;
-                return false;
-            }
-            q.head++;
-            idx = current_head;
-            length = (current_tail - current_head) - 1;
-            break;
+        std::unique_lock<std::mutex> lock(q.mtx);
+        q.cv.wait(lock, [&]{ return q.head < q.tail || !running; });
+        if (!running && q.head >= q.tail) {
+            return false;
         }
-
+        size_t idx = q.head++;
         r = q.queue[idx % q.queue.size()];
 
         record_profiler_value("fetch-queue", start);
@@ -698,6 +697,8 @@ private:
         vector<RawPayment> queue;
         size_t head{0};
         size_t tail{0};
+        std::mutex mtx;
+        std::condition_variable cv;
     };
 
     vector<unique_ptr<WorkerQueue>> queues;
