@@ -742,15 +742,14 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
 
-        std::thread([body]
-        {
+        // std::thread([body]{
             RawPayment r;
             r.size = body.size();
             std::memcpy(r.data.data(), body.data(), body.size());
 
             const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
             service->enqueue(idx % service->queue_count(), r);
-        }).detach();
+        // }).detach();
 
         static const Bytes response;
         static const multimap<string, string> headers = {
