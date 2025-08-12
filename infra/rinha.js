@@ -319,7 +319,6 @@ export async function define_stage() {
 }
 
 export function handleSummary(data) {
-
     const total_transactions_requested = data.metrics.transactions_success.values.count;
     const actual_total_amount = data.metrics.total_transactions_amount.values.count;
 
@@ -327,21 +326,32 @@ export function handleSummary(data) {
     const fallback_total_fee = data.metrics.fallback_total_fee.values.count;
     const total_fee = new Big(default_total_fee).plus(fallback_total_fee).toNumber();
 
-    const p_99 = new Big(data.metrics["http_req_duration{expected_response:true}"].values["p(99)"]).round(2).toNumber();
-    const p_99_bonus = Math.max(new Big((11 - p_99) * 0.02).round(2).toNumber(), 0);
-    const contains_inconsistencies = data.metrics.payments_inconsistency.values.count > 0;
+    // Prefer expected_response:true; fall back to overall if absent
+    const p99Metric =
+        data.metrics["http_req_duration{expected_response:true}"] ??
+        data.metrics["http_req_duration"];
 
+    // Guard: metric might be missing if no HTTP calls happened
+    const p99Raw = p99Metric?.values?.["p(99)"];
+    const p_99 = p99Raw != null ? Number(new Big(p99Raw).round(2)) : NaN;
+
+    const p_99_bonus = Math.max(Number(new Big((11 - (isNaN(p_99) ? 11 : p_99)) * 0.02).round(2)), 0);
+    const contains_inconsistencies = data.metrics.payments_inconsistency.values.count > 0;
     const inconsistencies_fine = contains_inconsistencies ? 0.35 : 0;
 
     // caixa dois
-    const lag = data.metrics.transactions_success.values.count - (data.metrics.default_total_requests.values.count + data.metrics.fallback_total_requests.values.count);
+    const lag =
+        data.metrics.transactions_success.values.count -
+        (data.metrics.default_total_requests.values.count +
+            data.metrics.fallback_total_requests.values.count);
     const slush_fund = lag < 0;
 
     const liquid_partial_amount = new Big(actual_total_amount).minus(total_fee).toNumber();
 
     const liquid_amount = new Big(liquid_partial_amount)
         .plus(new Big(liquid_partial_amount).times(p_99_bonus))
-        .minus(new Big(liquid_partial_amount).times(inconsistencies_fine)).toNumber();
+        .minus(new Big(liquid_partial_amount).times(inconsistencies_fine))
+        .toNumber();
 
     const name = __ENV.PARTICIPANT ?? "anonymous";
 
@@ -350,9 +360,10 @@ export function handleSummary(data) {
         total_liquido: liquid_amount,
         total_bruto: actual_total_amount,
         total_taxas: total_fee,
-        descricao: "'total_liquido' é sua pontuação final. Equivale ao seu lucro. Fórmula: total_liquido + (total_liquido * p99.bonus) - (total_liquido * multa.porcentagem)",
+        descricao:
+            "'total_liquido' é sua pontuação final. Equivale ao seu lucro. Fórmula: total_liquido + (total_liquido * p99.bonus) - (total_liquido * multa.porcentagem)",
         p99: {
-            valor: `${p_99}ms`,
+            valor: isNaN(p_99) ? "n/a" : `${p_99}ms`,
             bonus: `${new Big(p_99_bonus).times(100)}%`,
             max_requests: MAX_REQUESTS,
             descricao: "Fórmula para o bônus: max((11 - p99.valor) * 0.02, 0)",
@@ -363,67 +374,73 @@ export function handleSummary(data) {
             composicao: {
                 num_inconsistencias: data.metrics.payments_inconsistency.values.count,
                 descricao: "Se 'num_inconsistencias' > 0, há multa de 35%.",
-            }
+            },
         },
         caixa_dois: {
             detectado: slush_fund,
-            descricao: "Se 'lag' for negativo, significa que seu backend registrou mais pagamentos do que solicitado, automaticamente desclassificando sua submissão!",
+            descricao:
+                "Se 'lag' for negativo, significa que seu backend registrou mais pagamentos do que solicitado, automaticamente desclassificando sua submissão!",
         },
         lag: {
-            num_pagamentos_total: data.metrics.default_total_requests.values.count + data.metrics.fallback_total_requests.values.count,
+            num_pagamentos_total:
+                data.metrics.default_total_requests.values.count +
+                data.metrics.fallback_total_requests.values.count,
             num_pagamentos_solicitados: data.metrics.transactions_success.values.count,
-            lag: data.metrics.transactions_success.values.count - (data.metrics.default_total_requests.values.count + data.metrics.fallback_total_requests.values.count),
-            descricao: "Lag é a diferença entre a quantidade de solicitações de pagamentos e o que foi realmente computado pelo backend. Mostra a perda de pagamentos possivelmente por estarem enfileirados."
+            lag,
+            descricao:
+                "Lag é a diferença entre a quantidade de solicitações de pagamentos e o que foi realmente computado pelo backend. Mostra a perda de pagamentos possivelmente por estarem enfileirados.",
         },
         pagamentos_solicitados: {
             qtd_sucesso: data.metrics.transactions_success.values.count,
             qtd_falha: data.metrics.transactions_failure.values.count,
-            descricao: "'qtd_sucesso' foram requests bem sucedidos para 'POST /payments' e 'qtd_falha' os requests com erro."
+            descricao:
+                "'qtd_sucesso' foram requests bem sucedidos para 'POST /payments' e 'qtd_falha' os requests com erro.",
         },
         pagamentos_realizados_default: {
             total_bruto: data.metrics.default_total_amount.values.count,
             num_pagamentos: data.metrics.default_total_requests.values.count,
             total_taxas: data.metrics.default_total_fee.values.count,
-            descricao: "Informações do backend sobre solicitações de pagamento para o Payment Processor Default."
+            descricao:
+                "Informações do backend sobre solicitações de pagamento para o Payment Processor Default.",
         },
         pagamentos_realizados_fallback: {
             total_bruto: data.metrics.fallback_total_amount.values.count,
             num_pagamentos: data.metrics.fallback_total_requests.values.count,
             total_taxas: data.metrics.fallback_total_fee.values.count,
-            descricao: "Informações do backend sobre solicitações de pagamento para o Payment Processor Fallback."
-        }
+            descricao:
+                "Informações do backend sobre solicitações de pagamento para o Payment Processor Fallback.",
+        },
     };
 
-    const participant = __ENV.PARTICIPANT;
-    let summaryJsonFileName = `../participantes/${participant}/partial-results.json`
+    // ---- Build the offenders list BEFORE creating `result` ----
+    let offendersBlock = "";
+    if (!isNaN(p_99)) {
+        const offenders = slowest
+            .filter((s) => s.expected && s.dur > p_99)
+            .sort((a, b) => b.dur - a.dur);
 
-    if (participant == undefined) {
-        summaryJsonFileName = `./partial-results.json`
+        const header = `\n=== Requests slower than p(99) (${p_99.toFixed(2)} ms) ===`;
+        const list = offenders.slice(0, 500).map(
+            (s) =>
+                `${s.dur.toFixed(2)} ms  ${s.status}  ${s.method}  ${s.url}` +
+                (s.cid ? `  cid=${s.cid}` : "")
+        );
+        const footer = `Total slower-than-p99 listed: ${offenders.length} (showing up to 500)\n`;
+        offendersBlock = [header, ...list, footer].join("\n");
+    } else {
+        offendersBlock = "\n=== Requests slower than p(99) ===\n(no http_req_duration data collected)\n";
     }
 
-    result[summaryJsonFileName] = JSON.stringify(custom_data, null, 2);
-
-    // ---- offenders vs p(99) from built-in metrics ----
-    const p99Metric =
-        data.metrics["http_req_duration{expected_response:true}"] ??
-        data.metrics["http_req_duration"];
-    const p_99 = Number(new Big(p99Metric.values["p(99)"]).round(2));
-
-    const offenders = slowest
-        .filter((s) => s.expected && s.dur > p_99)
-        .sort((a, b) => b.dur - a.dur);
-
-    const header = `\n=== Requests slower than p(99) (${p_99.toFixed(2)} ms) ===`;
-    const list = offenders.slice(0, 500).map(
-        (s) =>
-            `${s.dur.toFixed(2)} ms  ${s.status}  ${s.method}  ${s.url}` +
-            (s.cid ? `  cid=${s.cid}` : "")
-    );
-    const footer = `Total slower-than-p99 listed: ${offenders.length} (showing up to 500)\n`;
-
+    // ---- Create `result` ONCE ----
     const result = {
-        stdout: [header, ...list, footer, textSummary(data)].join("\n"),
+        stdout: [offendersBlock, textSummary(data)].join("\n"),
     };
+
+    // keep your JSON file output
+    const participant = __ENV.PARTICIPANT;
+    let summaryJsonFileName = `../participantes/${participant}/partial-results.json`;
+    if (participant == undefined) summaryJsonFileName = `./partial-results.json`;
+    result[summaryJsonFileName] = JSON.stringify(custom_data, null, 2);
 
     return result;
 }
