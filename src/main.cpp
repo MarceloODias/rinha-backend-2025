@@ -20,6 +20,7 @@
 #include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <string_view>
 #include <unordered_map>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -36,12 +37,11 @@ using namespace rapidjson;
 constexpr bool const_performance_metrics_enabled = false;
 
 struct Payment {
-    string correlationId;
     double amount{};
 };
 
 struct RawPayment {
-    std::array<uint8_t, 70> data{};
+    std::array<uint8_t, 71> data{};
     size_t size{};
 };
 
@@ -403,13 +403,13 @@ private:
             allocator.Clear();
             thread_local rapidjson::Document d(&allocator);
             d.SetObject();
-            d.Parse<rapidjson::kParseDefaultFlags>(reinterpret_cast<const char*>(r.data.data()), r.size);
+            d.ParseInsitu(reinterpret_cast<char*>(r.data.data()));
             Payment p;
-            p.correlationId = d["correlationId"].GetString();
             p.amount = d["amount"].GetDouble();
+            string_view correlationId(d["correlationId"].GetString(), d["correlationId"].GetStringLength());
             record_profiler_value("parsing", start_parse);
 
-            auto [processor, ts] = process_payment(p, isFallbackPool);
+            auto [processor, ts] = process_payment(p, correlationId, isFallbackPool);
             if (processor == "try_again") {
                 enqueue(worker_id, r);
             }
@@ -443,11 +443,11 @@ private:
         return true;
     }
 
-    pair<string, uint64_t> process_payment(const Payment& p, bool isFallbackPool)
+    pair<string, uint64_t> process_payment(const Payment& p, string_view correlationId, bool isFallbackPool)
     {
         const auto start = get_now();
 
-        auto [payload, ts] = create_processor_payload(p);
+        auto [payload, ts] = create_processor_payload(p, correlationId);
         string primary = isFallbackPool ? test_url : main_url;
         string secondary = isFallbackPool ? main_url : test_url;
         string primary_label = (primary == default_processor ? "default" : "fallback");
@@ -603,7 +603,7 @@ private:
         record_profiler_value("evaluate_switch", start);
     }
 
-    static pair<string, uint64_t> create_processor_payload(const Payment& p) {
+    static pair<string, uint64_t> create_processor_payload(const Payment& p, string_view correlationId) {
         const auto start = get_now();
 
         // ---- Fast timestamp formatting ----
@@ -624,7 +624,7 @@ private:
         d.SetObject();
         auto& a = d.GetAllocator();
 
-        d.AddMember("correlationId", StringRef(p.correlationId.c_str(), p.correlationId.size()), a);
+        d.AddMember("correlationId", StringRef(correlationId.data(), correlationId.size()), a);
         d.AddMember("amount", p.amount, a);
         d.AddMember("requestedAt", StringRef(requestedAt, strlen(requestedAt)), a);
 
@@ -736,6 +736,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
         RawPayment r;
         r.size = body.size();
         std::memcpy(r.data.data(), body.data(), body.size());
+        r.data[r.size] = 0; // null-terminate for in-situ parsing
 
         const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
         service->enqueue(idx % service->queue_count(), r);
