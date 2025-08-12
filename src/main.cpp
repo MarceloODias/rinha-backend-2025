@@ -780,24 +780,21 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     string to = request->get_query_parameter("to");
     string internal = request->get_query_parameter("internal", "false");
 
-    auto local_future = std::async(std::launch::async, [from, to] {
-        return service->query(from, to);
-    });
-
-    std::future<map<string, Summary>> other_future;
-    const char* other = nullptr;
-    if (internal != "true") {
-        other = getenv("OTHER_INSTANCE_URL");
-        if (other != nullptr) {
-            string other_url = other;
-            other_future = std::async(std::launch::async, [other_url, from, to] {
-                return call_other_instance(other_url, from, to);
-            });
-        }
+    const char* other_url = nullptr;
+    if (internal != "true")
+    {
+        other_url = getenv("OTHER_INSTANCE_URL");
     }
 
-    auto res = local_future.get();
-    if (other != nullptr) {
+    std::future<map<string, Summary>> other_future;
+    if (other_url != nullptr) {
+        other_future = std::async(std::launch::async, [other_url, from, to] {
+            return call_other_instance(other_url, from, to);
+        });
+    }
+
+    auto res = service->query(from, to);
+    if (other_url != nullptr) {
         auto otherRes = other_future.get();
         res["default"].totalRequests += otherRes["default"].totalRequests;
         res["default"].totalAmount += otherRes["default"].totalAmount;
