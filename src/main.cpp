@@ -741,17 +741,20 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     static atomic<size_t> queue_index = {0};
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
-        RawPayment r;
-        r.size = body.size();
-        std::memcpy(r.data.data(), body.data(), body.size());
 
-        const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
-        service->enqueue(idx % service->queue_count(), r);
+        std::thread(std::launch::async, [body]
+        {
+            RawPayment r;
+            r.size = body.size();
+            std::memcpy(r.data.data(), body.data(), body.size());
+
+            const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
+            service->enqueue(idx % service->queue_count(), r);
+        }).detach();
 
         static const Bytes response;
         static const multimap<string, string> headers = {
-            {"Content-Length", "0"},
-            {"Connection", "keep-alive"}
+            {"Content-Length", "0"}
         };
 
         session->yield(202, response, headers);
