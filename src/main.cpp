@@ -7,7 +7,6 @@
 #include <rapidjson/stringbuffer.h>
 #include <array>
 #include <cstring>
-#include <cstdio>
 #include <curl/curl.h>
 #include <chrono>
 #include <thread>
@@ -15,7 +14,6 @@
 #include <map>
 #include <memory>
 #include <cstdlib>
-#include <ctime>
 #include <future>
 #include <sstream>
 #include <iomanip>
@@ -110,28 +108,6 @@ std::unordered_map<string, std::atomic<long>> count_perf_data;
 std::chrono::high_resolution_clock::time_point get_now()
 {
     return std::chrono::high_resolution_clock::now();
-}
-
-void cpuinfo() {
-    try
-    {
-#if defined(__GNUC__) && !defined(__clang__)
-        // Initialize CPU feature detection
-        __builtin_cpu_init();
-
-        std::cout << "Runtime CPU features (host):\n";
-        std::cout << "  AVX2: " << __builtin_cpu_supports("avx2") << "\n";
-        std::cout << "  AVX : " << __builtin_cpu_supports("avx")  << "\n";
-        std::cout << "  FMA : " << __builtin_cpu_supports("fma")  << "\n";
-        std::cout << "  BMI2: " << __builtin_cpu_supports("bmi2") << "\n";
-        std::cout << "  SSE4.2: " << __builtin_cpu_supports("sse4.2") << "\n";
-        std::cout << "  AES : " << __builtin_cpu_supports("aes")  << "\n";
-#else
-        std::cout << "CPU feature detection not supported on this compiler\n";
-#endif
-    } catch (const std::exception& e) {
-        std::cerr << "Error reading /proc/cpuinfo: " << e.what() << "\n";
-    }
 }
 
 void init_profiler()
@@ -428,7 +404,7 @@ private:
 
             if (inter_interval > 0)
             {
-                this_thread::sleep_for(chrono::milliseconds(inter_interval));
+                this_thread::sleep_for(chrono::microseconds(inter_interval));
             }
         }
     }
@@ -851,8 +827,6 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 }
 
 int main(const int, char**) {
-    cpuinfo();
-
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
 
