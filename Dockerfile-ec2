@@ -65,3 +65,17 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /usr/src/app
 # If Restbed was built as a shared lib, this ensure
+
+COPY --from=builder /usr/local/lib /usr/local/lib
+COPY --from=builder /usr/src/app/build/payments-service /usr/src/app/payments-service
+
+# Strip only the final executable
+RUN strip /usr/src/app/payments-service || true
+
+RUN mkdir -p /var/tmp/sockets
+EXPOSE 8080
+
+# Use jemalloc by default (easy to A/B; remove if not helpful)
+ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
+
+CMD ["./payments-service"]
