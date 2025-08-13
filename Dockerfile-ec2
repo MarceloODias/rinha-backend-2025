@@ -1,0 +1,67 @@
+# ---------- Build stage ----------
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DOCKER_ENV=1
+
+# Toolchain + deps (note: no lld here; use GNU ld or gold)
+RUN apt-get update --fix-missing && apt-get install -y \
+    build-essential cmake git curl wget pkg-config \
+    binutils binutils-gold gcc g++ \
+    libssl-dev uuid-dev zlib1g-dev libcurl4-openssl-dev \
+    libasio-dev libbz2-dev libsnappy-dev liblz4-dev libzstd-dev libgflags-dev \
+    libjemalloc2 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# CPU-tuned flags for AMD EPYC 7002 (Zen 2)
+ENV CFLAGS="-O3 -march=znver2 -mtune=znver2 -fno-plt -ffunction-sections -fdata-sections -DNDEBUG -pipe"
+ENV CXXFLAGS="$CFLAGS -flto"
+# Keep link flags simple; no lld to avoid GCC LTO incompat
+ENV LDFLAGS="-Wl,--gc-sections -Wl,--as-needed -Wl,-O2"
+
+# ---- Build Restbed (no OpenSSL) ----
+COPY restbed-docker/ /restbed/
+RUN cmake -S /restbed -B /restbed/build \
+      -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SSL=OFF -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_IPC=YES \
+      -DCMAKE_C_FLAGS="$CFLAGS" \
+      -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+      -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+      -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
+      -DCMAKE_POLICY_DEFAULT_CMP0069=NEW \
+ && cmake --build /restbed/build -j $(nproc) \
+ && cmake --install /restbed/build \
+ && cp -r /restbed/distribution/include/* /usr/local/include/ || true \
+ && cp -r /restbed/distribution/library/* /usr/local/lib/ || true \
+ && ldconfig
+
+# ---- Build your app ----
+WORKDIR /usr/src/app
+COPY CMakeLists.txt ./
+COPY src ./src
+COPY include ./include
+
+# Sanity: ensure we actually copied your entry point
+RUN test -s src/main.cpp || (echo 'FATAL: src/main.cpp missing or empty in image. Check copy steps.' && exit 1)
+
+RUN rm -rf build \
+ && cmake -S . -B build \
+      -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+      -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+      -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
+      -DCMAKE_POLICY_DEFAULT_CMP0069=NEW \
+ && cmake --build build -j $(nproc)
+
+# ---------- Runtime stage ----------
+FROM ubuntu:24.04 AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+      libssl3 libcurl4 libstdc++6 libgcc-s1 libjemalloc2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/app
+# If Restbed was built as a shared lib, this ensure
