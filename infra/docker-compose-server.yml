@@ -2,14 +2,16 @@ version: '3.9'
 
 services:
   app1: &app
-    image: maruero/rinha-de-backend-2025:socket
+    image: maruero/rinha-de-backend-2025:20250813
     hostname: app1
     environment:
+      INTER_INTERVAL=2500
+      - FALLBACK_ENABLED=0
       - PROCESSOR_URL=http://payment-processor-default:8080
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
       - OTHER_INSTANCE_URL=http://app2:8080
       - SOCKET=/var/tmp/sockets/app1.sock
-      - CONCURRENCY=2
+      - CONCURRENCY=1
       - WORKER_COUNT=2
     volumes:
       - sockets:/var/tmp/sockets
@@ -26,11 +28,13 @@ services:
     <<: *app
     hostname: app2
     environment:
+      INTER_INTERVAL=2500
+      - FALLBACK_ENABLED=0
       - PROCESSOR_URL=http://payment-processor-default:8080
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
       - OTHER_INSTANCE_URL=http://app1:8080
       - SOCKET=/var/tmp/sockets/app2.sock
-      - CONCURRENCY=2
+      - CONCURRENCY=1
       - WORKER_COUNT=2
     deploy:
       resources:
