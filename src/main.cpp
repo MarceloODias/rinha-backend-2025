@@ -144,7 +144,14 @@ void lower_this_thread_priority(int nice_inc) {
     pid_t tid = gettid_linux();
     // nice range: -20 (high priority) .. +19 (low priority)
     int rc = setpriority(PRIO_PROCESS, tid, nice_inc);
-    if (rc != 0) perror("setpriority");
+    if (rc != 0)
+    {
+        perror(("setpriority" + std::to_string(tid)).c_str());
+    }
+    else
+    {
+        std::cout << "Thread " << tid << " priority set to " << nice_inc << std::endl;
+    }
 }
 
 string get_local_time()
