@@ -387,23 +387,17 @@ private:
             }
 
             //const auto start_parse = get_now();
-            thread_local rapidjson::MemoryPoolAllocator<> allocator;
-            allocator.Clear();
-            thread_local rapidjson::Document d(&allocator);
-            d.SetObject();
-            d.Parse<rapidjson::kParseDefaultFlags>(reinterpret_cast<const char*>(r.data.data()), r.size);
-            Payment p;
-            p.correlationId = d["correlationId"].GetString();
-            p.amount = d["amount"].GetDouble();
+            const auto json = reinterpret_cast<const char*>(r.data.data());
+            auto json_str = string(json, r.size);
             //record_profiler_value("parsing", start_parse);
 
-            auto [processor, ts] = process_payment(p, isFallbackPool);
+            auto [processor, ts] = process_payment(json_str, isFallbackPool);
             if (processor == "try_again") {
                 enqueue(worker_id, r);
             }
             else
             {
-                store_processed(p, processor, ts);
+                store_processed(json_str, processor, ts);
             }
 
             if (isFallbackPool)
@@ -436,11 +430,11 @@ private:
         return true;
     }
 
-    pair<string, uint64_t> process_payment(const Payment& p, bool isFallbackPool)
+    pair<string, uint64_t> process_payment(string& json, bool isFallbackPool)
     {
         //const auto start = get_now();
 
-        auto [payload, ts] = create_processor_payload(p);
+        auto [payload, ts] = create_processor_payload(json);
         string primary = isFallbackPool ? test_url : main_url;
         string secondary = isFallbackPool ? main_url : test_url;
         string primary_label = (primary == default_processor ? "default" : "fallback");
@@ -596,7 +590,7 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
-    static pair<string, uint64_t> create_processor_payload(const Payment& p) {
+    static pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
 
         // ---- Fast timestamp formatting ----
@@ -613,23 +607,19 @@ private:
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                  tm.tm_hour, tm.tm_min, tm.tm_sec);
 
-        // ---- JSON Building ----
-        thread_local Document d;
-        d.SetObject();
-        auto& a = d.GetAllocator();
+        // remove last char '{' from json
+        if (json.back() == '}')
+        {
+            // remove lastcharacter
+            json.pop_back();
 
-        d.AddMember("correlationId", StringRef(p.correlationId.c_str(), p.correlationId.size()), a);
-        d.AddMember("amount", p.amount, a);
-        d.AddMember("requestedAt", StringRef(requestedAt, strlen(requestedAt)), a);
-
-        thread_local StringBuffer sb;
-        sb.Clear();
-        Writer<StringBuffer> w(sb);
-        d.Accept(w);
+            // add requestedAt field
+            json += ",\"requestedAt\":\"" + string(requestedAt) + "\"}";
+        }
 
         //record_profiler_value("create_processor_payload", start);
 
-        return {sb.GetString(), static_cast<uint64_t>(ms_since_epoch)};
+        return {json, static_cast<uint64_t>(ms_since_epoch)};
     }
 
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
@@ -668,16 +658,28 @@ private:
         return (res == CURLE_OK && code == 200);
     }
 
-    void store_processed(const Payment& p, const string& processor, uint64_t timestamp)
+    void store_processed(const string& json, const string& processor, uint64_t timestamp)
     {
         //const auto start = get_now();
+
+        // extract amount from JSON using string/char manipulation
+        double amount = 0.0;
+        size_t amount_pos = json.find("\"amount\":");
+        if (amount_pos != string::npos) {
+            size_t start_pos = amount_pos + 9; // length of "\"amount\":"
+            size_t end_pos = json.find_first_of(",}", start_pos);
+            if (end_pos != string::npos) {
+                string amount_str = json.substr(start_pos, end_pos - start_pos);
+                amount = stod(amount_str);
+            }
+        }
 
         auto& map = (processor == "fallback" ? processed_fallback_map : processed_default_map);
 
         std::lock_guard<std::mutex> lock(processed_mutex);
         Summary& s = map[timestamp];
         s.totalRequests++;
-        s.totalAmount += p.amount;
+        s.totalAmount += amount;
 
         //record_profiler_value("store_processed", start);
     }
