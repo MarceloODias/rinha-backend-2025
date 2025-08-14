@@ -306,16 +306,22 @@ public:
 
         uint64_t from_ms = parse_timestamp_ms(from);
         uint64_t to_ms = parse_timestamp_ms(to);
+        if (to_ms < from_ms) {
+            return result;
+        }
 
-        size_t limit = std::min(processed_index.load(std::memory_order_relaxed), processed.size());
-        for (size_t i = 0; i < limit; ++i) {
-            const auto &slot = processed[i];
+        const uint64_t from_sec = (from_ms / 1000) * 1000;
+        const uint64_t to_sec = (to_ms / 1000) * 1000;
 
-            uint64_t ts = slot.timestamp;
-            if (ts >= from_ms && ts <= to_ms) {
-                Summary* s = slot.processor == 'f' ? &result.fb : &result.def;
-                s->totalRequests++;
-                s->totalAmount += slot.amount;
+        // std::lock_guard<std::mutex> lock(processed_mutex);
+        for (uint64_t ts = from_sec; ts <= to_sec; ts += 1000) {
+            if (auto it = processed_default_map.find(ts); it != processed_default_map.end()) {
+                result.def.totalRequests += it->second.totalRequests;
+                result.def.totalAmount += it->second.totalAmount;
+            }
+            if (auto it = processed_fallback_map.find(ts); it != processed_fallback_map.end()) {
+                result.fb.totalRequests += it->second.totalRequests;
+                result.fb.totalAmount += it->second.totalAmount;
             }
         }
         return result;
@@ -593,14 +599,15 @@ private:
         char requestedAt[32];
         auto now = chrono::system_clock::now();
         long long ms_since_epoch = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+        ms_since_epoch = (ms_since_epoch / 1000) * 1000; // truncate to seconds
         time_t t = ms_since_epoch / 1000;
         tm tm{};
         gmtime_r(&t, &tm);
-        long long ms_part = ms_since_epoch % 1000;
+
         snprintf(requestedAt, sizeof(requestedAt),
-                 "%04d-%02d-%02dT%02d:%02d:%02d.%03lldZ",
+                 "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                 tm.tm_hour, tm.tm_min, tm.tm_sec, ms_part);
+                 tm.tm_hour, tm.tm_min, tm.tm_sec);
 
         // ---- JSON Building ----
         thread_local Document d;
@@ -661,24 +668,25 @@ private:
     {
         const auto start = get_now();
 
-        size_t idx = processed_index.fetch_add(1, std::memory_order_relaxed);
-        auto &slot = processed[idx];
+        auto& map = (processor == "fallback" ? processed_fallback_map : processed_default_map);
 
-        slot.timestamp = timestamp;
-        slot.amount = p.amount;
-        slot.processor = (processor == "fallback" ? 'f' : 'd');
+        Summary& s = map[timestamp];
+        std::lock_guard<std::mutex> lock(processed_mutex);
+        s.totalRequests++;
+        s.totalAmount += p.amount;
 
         record_profiler_value("store_processed", start);
     }
 
     struct ProcessedSlot {
-        uint64_t timestamp;
+        int count;
         double amount;
-        char processor;
     };
-    static constexpr size_t PROCESSED_CAPACITY = 50'000;
-    mutable std::array<ProcessedSlot, PROCESSED_CAPACITY> processed{};
-    atomic<size_t> processed_index{0};
+
+    mutable std::mutex processed_mutex;
+    mutable unordered_map<uint64_t, Summary> processed_default_map;
+    mutable unordered_map<uint64_t, Summary> processed_fallback_map;
+
     struct WorkerQueue {
         vector<RawPayment> queue;
         size_t head{0};
