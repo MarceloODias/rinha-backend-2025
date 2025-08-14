@@ -146,7 +146,7 @@ void lower_this_thread_priority(int nice_inc) {
     int rc = setpriority(PRIO_PROCESS, tid, nice_inc);
     if (rc != 0)
     {
-        perror(("setpriority" + std::to_string(tid)).c_str());
+        perror(("setpriority " + std::to_string(nice_inc)).c_str());
     }
     else
     {
@@ -745,19 +745,19 @@ private:
 static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
-    thread_local bool set_priority = false;
-    if (!set_priority)
-    {
-        set_priority = true;
-        lower_this_thread_priority(-19);
-    }
-
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
     //size_t length = request->get_header("Content-Length", 0);
     static atomic<size_t> queue_index = {0};
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
+
+        thread_local bool set_priority = false;
+        if (!set_priority)
+        {
+            set_priority = true;
+            lower_this_thread_priority(-19);
+        }
 
         // std::thread([body]{
             RawPayment r;
