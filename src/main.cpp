@@ -24,7 +24,6 @@
 #include <fstream>
 #include <unordered_set>
 #include <vector>
-#include <mutex>
 #include <condition_variable>
 
 using namespace restbed;
@@ -281,10 +280,6 @@ public:
 
     ~PaymentService() {
         running = false;
-        for (auto& q : queues) {
-            std::lock_guard<std::mutex> lock(q->mtx);
-            q->cv.notify_all();
-        }
         for (auto& t : workers) {
             if (t.joinable()) t.join();
         }
@@ -294,11 +289,9 @@ public:
         //const auto start = get_now();
         WorkerQueue& q = *queues[queue_idx % queues.size()];
         {
-            std::lock_guard<std::mutex> lock(q.mtx);
             size_t pos = q.tail++;
             q.queue[pos % q.queue.size()] = r;
         }
-        q.cv.notify_one();
 
         //record_profiler_value("put-queue", start);
     }
@@ -320,7 +313,6 @@ public:
         const uint64_t from_sec = ((from_ms + 1000) / 1000) * 1000;
         const uint64_t to_sec = (to_ms / 1000) * 1000;
 
-        // std::lock_guard<std::mutex> lock(processed_mutex);
         for (uint64_t ts = from_sec; ts <= to_sec; ts += 1000) {
             if (auto it = processed_default_map.find(ts); it != processed_default_map.end()) {
                 result.def.totalRequests += it->second.totalRequests;
@@ -424,8 +416,6 @@ private:
         //const auto start = get_now();
 
         WorkerQueue& q = *queues[worker_id];
-        std::unique_lock<std::mutex> lock(q.mtx);
-        q.cv.wait(lock, [&]{ return q.head < q.tail || !running; });
         if (!running && q.head >= q.tail) {
             return false;
         }
@@ -685,7 +675,6 @@ private:
                     (processor == ProcessorResult::Fallback ? processed_fallback_map : processed_default_map)
                     : processed_default_map;
 
-        std::lock_guard<std::mutex> lock(processed_mutex);
         Summary& s = map[timestamp];
         s.totalRequests++;
         s.totalAmount += amount;
@@ -698,7 +687,6 @@ private:
         double amount;
     };
 
-    mutable std::mutex processed_mutex;
     mutable unordered_map<uint64_t, Summary> processed_default_map;
     mutable unordered_map<uint64_t, Summary> processed_fallback_map;
 
@@ -706,7 +694,6 @@ private:
         vector<RawPayment> queue;
         size_t head{0};
         size_t tail{0};
-        std::mutex mtx;
         std::condition_variable cv;
     };
 
