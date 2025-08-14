@@ -593,7 +593,7 @@ private:
             }
         }
 
-        record_profiler_value("evaluate_switch", start);
+        //record_profiler_value("evaluate_switch", start);
     }
 
     static pair<string, uint64_t> create_processor_payload(const Payment& p) {
