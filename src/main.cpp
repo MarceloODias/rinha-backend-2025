@@ -14,6 +14,7 @@
 #include <array>
 #include <cstring>
 #include <curl/curl.h>
+#include "raw_http_client.h"
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -54,47 +55,6 @@ static size_t write_callback(void* contents, const size_t size, const size_t nme
     response->append(static_cast<char*>(contents), size * nmemb);
     return size * nmemb;
 }
-
-struct CurlHandle {
-    CURL* handle = nullptr;
-    struct curl_slist* headers = nullptr;
-    std::string response_buffer;
-
-    CurlHandle() {
-        handle = curl_easy_init();
-        if (handle) {
-            headers = curl_slist_append(headers, "Content-Type: application/json");
-
-            curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
-            curl_easy_setopt(handle, CURLOPT_POST, 1L);
-            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
-
-            // Optional: set timeouts or connection reuse options
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 30L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 15L);
-        }
-    }
-
-    ~CurlHandle() {
-        if (headers) curl_slist_free_all(headers);
-        if (handle) curl_easy_cleanup(handle);
-    }
-
-    void clear_response() {
-        response_buffer.clear();
-    }
-
-    const std::string& response() const {
-        return response_buffer;
-    }
-
-    void set_payload(const std::string& url, const std::string& body) {
-        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.c_str());
-    }
-};
 
 struct Summary {
     uint64_t totalRequests = 0;
@@ -654,40 +614,45 @@ private:
         return {sb.GetString(), static_cast<uint64_t>(ms_since_epoch)};
     }
 
+    static void parse_http_url(const string& url, string& host, int& port, string& path) {
+        port = 80;
+        string temp = url;
+        if (temp.rfind("http://", 0) == 0) temp = temp.substr(7);
+        size_t slash = temp.find('/');
+        string hostport = (slash == string::npos) ? temp : temp.substr(0, slash);
+        path = (slash == string::npos) ? "/" : temp.substr(slash);
+        size_t colon = hostport.find(':');
+        if (colon != string::npos) {
+            host = hostport.substr(0, colon);
+            port = stoi(hostport.substr(colon + 1));
+        } else {
+            host = hostport;
+        }
+    }
+
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
-        //const auto start_method = get_now();
-
         const string url = base + "/payments";
-        thread_local CurlHandle curl_wrapper;
+        string host, path; int port;
+        parse_http_url(url, host, port, path);
 
-        CURL* curl = curl_wrapper.handle;
-        if (!curl) {
+        auto start = chrono::steady_clock::now();
+        int status = 0;
+        try {
+            RawHttpClient client(host, port, "POST", path, "", payload.size());
+            if (client.send_request(payload.data(), payload.size(), status) < 0) {
+                elapsed = chrono::duration<double, milli>(chrono::steady_clock::now() - start).count();
+                code = status;
+                return false;
+            }
+        } catch (...) {
             elapsed = 0;
             code = 0;
             return false;
         }
-
-        curl_wrapper.clear_response(); // reuse buffer
-
-        curl_wrapper.set_payload(url, payload); // dynamic update only
-
-        const auto start = chrono::steady_clock::now();
-        const CURLcode res = curl_easy_perform(curl);
-        const auto end = chrono::steady_clock::now();
-
+        auto end = chrono::steady_clock::now();
         elapsed = chrono::duration<double, milli>(end - start).count();
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-
-        /*
-        if constexpr (const_performance_metrics_enabled)
-        {
-            print_log(url + " - " + to_string(code) + " - " + to_string(elapsed) + "ms" + " " + get_local_time());
-        }
-        */
-
-        //record_profiler_value("send_to_processor", start_method);
-
-        return (res == CURLE_OK && code == 200);
+        code = status;
+        return (status == 200);
     }
 
     void store_processed(const Payment& p, const string& processor, uint64_t timestamp)
