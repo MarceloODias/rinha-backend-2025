@@ -284,7 +284,7 @@ public:
     }
 
     void enqueue(size_t queue_idx, const RawPayment& r) {
-        const auto start = get_now();
+        //const auto start = get_now();
         WorkerQueue& q = *queues[queue_idx % queues.size()];
         {
             std::lock_guard<std::mutex> lock(q.mtx);
@@ -293,7 +293,7 @@ public:
         }
         q.cv.notify_one();
 
-        record_profiler_value("put-queue", start);
+        //record_profiler_value("put-queue", start);
     }
 
     size_t queue_count() const {
@@ -375,14 +375,18 @@ private:
             }
 
             bool isFallbackPool = false;
-            const auto now = get_now();
-            int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
-            if (fallback_enabled && !fallback_is_running && elapsed >= fallback_interval_ms) {
-                fallback_is_running = true;
-                isFallbackPool = true;
+
+            if (fallback_enabled)
+            {
+                const auto now = get_now();
+                int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
+                if (!fallback_is_running && elapsed >= fallback_interval_ms) {
+                    fallback_is_running = true;
+                    isFallbackPool = true;
+                }
             }
 
-            const auto start_parse = get_now();
+            //const auto start_parse = get_now();
             thread_local rapidjson::MemoryPoolAllocator<> allocator;
             allocator.Clear();
             thread_local rapidjson::Document d(&allocator);
@@ -391,7 +395,7 @@ private:
             Payment p;
             p.correlationId = d["correlationId"].GetString();
             p.amount = d["amount"].GetDouble();
-            record_profiler_value("parsing", start_parse);
+            //record_profiler_value("parsing", start_parse);
 
             auto [processor, ts] = process_payment(p, isFallbackPool);
             if (processor == "try_again") {
@@ -416,7 +420,7 @@ private:
     }
 
     bool fetch_next(size_t worker_id, RawPayment& r) {
-        const auto start = get_now();
+        //const auto start = get_now();
 
         WorkerQueue& q = *queues[worker_id];
         std::unique_lock<std::mutex> lock(q.mtx);
@@ -427,14 +431,14 @@ private:
         size_t idx = q.head++;
         r = q.queue[idx % q.queue.size()];
 
-        record_profiler_value("fetch-queue", start);
+        //record_profiler_value("fetch-queue", start);
 
         return true;
     }
 
     pair<string, uint64_t> process_payment(const Payment& p, bool isFallbackPool)
     {
-        const auto start = get_now();
+        //const auto start = get_now();
 
         auto [payload, ts] = create_processor_payload(p);
         string primary = isFallbackPool ? test_url : main_url;
@@ -452,12 +456,12 @@ private:
         handle_response(primary, elapsed, code);
         if (ok) {
 
-            record_profiler_value("process_payment", start);
+            //record_profiler_value("process_payment", start);
             return {primary_label, ts};
         }
         if (code == 422)
         {
-            record_profiler_value("process_payment", start);
+            //record_profiler_value("process_payment", start);
             return {"discard", ts};
         }
 
@@ -470,21 +474,21 @@ private:
         ok = send_to_processor(secondary, payload, elapsed2, code2);
         handle_response(secondary, elapsed2, code2);
         if (ok) {
-            record_profiler_value("process_payment", start);
+            //record_profiler_value("process_payment", start);
             return {secondary_label, ts};
         }
         if (code == 422)
         {
-            record_profiler_value("process_payment", start);
+           // record_profiler_value("process_payment", start);
             return {"discard", ts};
         }
-        record_profiler_value("process_payment", start);
+        //record_profiler_value("process_payment", start);
         return {"try_again", ts};
     }
 
     void handle_response(const string& url, const double elapsed, const long code)
     {
-        const auto start = get_now();
+        //const auto start = get_now();
         if (fallback_enabled)
         {
             const bool using_default_as_main = (main_url == default_processor);
@@ -532,7 +536,7 @@ private:
             evaluate_switch();
         }
 
-        record_profiler_value("handle_response", start);
+        //record_profiler_value("handle_response", start);
     }
 
     void update_time(const string& url, double elapsed)
@@ -568,7 +572,7 @@ private:
         }
         fallback_evaluated = true;
 
-        const auto start = get_now();
+        //const auto start = get_now();
 
         const double def = default_time_ms;
         const double fb = fallback_time_ms;
@@ -593,7 +597,7 @@ private:
     }
 
     static pair<string, uint64_t> create_processor_payload(const Payment& p) {
-        const auto start = get_now();
+        //const auto start = get_now();
 
         // ---- Fast timestamp formatting ----
         char requestedAt[32];
@@ -623,13 +627,13 @@ private:
         Writer<StringBuffer> w(sb);
         d.Accept(w);
 
-        record_profiler_value("create_processor_payload", start);
+        //record_profiler_value("create_processor_payload", start);
 
         return {sb.GetString(), static_cast<uint64_t>(ms_since_epoch)};
     }
 
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
-        const auto start_method = get_now();
+        //const auto start_method = get_now();
 
         const string url = base + "/payments";
         thread_local CurlHandle curl_wrapper;
@@ -659,14 +663,14 @@ private:
         }
         */
 
-        record_profiler_value("send_to_processor", start_method);
+        //record_profiler_value("send_to_processor", start_method);
 
         return (res == CURLE_OK && code == 200);
     }
 
     void store_processed(const Payment& p, const string& processor, uint64_t timestamp)
     {
-        const auto start = get_now();
+        //const auto start = get_now();
 
         auto& map = (processor == "fallback" ? processed_fallback_map : processed_default_map);
 
@@ -675,7 +679,7 @@ private:
         s.totalRequests++;
         s.totalAmount += p.amount;
 
-        record_profiler_value("store_processed", start);
+        //record_profiler_value("store_processed", start);
     }
 
     struct ProcessedSlot {
