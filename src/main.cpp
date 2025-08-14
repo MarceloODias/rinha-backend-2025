@@ -1,5 +1,11 @@
 #define BUILD_IPC 1
+#define _GNU_SOURCE
 
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <errno.h>
+#include <stdio.h>
 
 #include <restbed>
 #include <rapidjson/document.h>
@@ -130,6 +136,15 @@ void reset_profiler()
         performance_data.at(key).store(0);
         count_perf_data.at(key).store(0);
     }
+}
+
+static pid_t gettid_linux(void) { return (pid_t)syscall(SYS_gettid); }
+
+void lower_this_thread_priority(int nice_inc) {
+    pid_t tid = gettid_linux();
+    // nice range: -20 (high priority) .. +19 (low priority)
+    int rc = setpriority(PRIO_PROCESS, tid, nice_inc);
+    if (rc != 0) perror("setpriority");
 }
 
 string get_local_time()
@@ -364,9 +379,9 @@ private:
             // pin_thread_to_core(cpu_id, "worker");
             pinned = true;
         }
+        lower_this_thread_priority(19);
 
         last_fallback = get_now();
-
         while (running) {
             RawPayment r;
             bool has = fetch_next(worker_id, r);
@@ -723,6 +738,13 @@ private:
 static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
+    thread_local bool set_priority = false;
+    if (!set_priority)
+    {
+        set_priority = true;
+        lower_this_thread_priority(-19);
+    }
+
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
     //size_t length = request->get_header("Content-Length", 0);
