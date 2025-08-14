@@ -640,10 +640,6 @@ private:
     bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) const
     {
         //const auto start_method = get_now();
-        if (fakeFlag == 1)
-        {
-            return true;
-        }
 
         const string url = base + "/payments";
         thread_local CurlHandle curl_wrapper;
@@ -656,11 +652,23 @@ private:
         }
 
         curl_wrapper.clear_response(); // reuse buffer
-
         curl_wrapper.set_payload(url, payload); // dynamic update only
 
         const auto start = chrono::steady_clock::now();
-        const CURLcode res = curl_easy_perform(curl);
+        CURLcode res;
+        if (fakeFlag == 1)
+        {
+            std::thread([curl]
+            {
+                curl_easy_perform(curl);
+            }).detach();
+            code = 200;
+            return true;
+        }
+        else
+        {
+            res = curl_easy_perform(curl);
+        }
         const auto end = chrono::steady_clock::now();
 
         elapsed = chrono::duration<double, milli>(end - start).count();
