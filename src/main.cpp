@@ -222,6 +222,11 @@ public:
 
     PaymentService() {
         std::cout << "Initializing PaymentService v1.0..." << std::endl;
+        const char* fake = getenv("FAKE");
+        fakeFlag = fake ? atoi(fake) : 0;
+        std::cout << "FAKE=" << fake << std::endl;
+
+
         const char* workerCount = getenv("WORKER_COUNT");
         int workerCountInt = workerCount ? atoi(workerCount) : 1;
 
@@ -632,8 +637,13 @@ private:
         return {sb.GetString(), static_cast<uint64_t>(ms_since_epoch)};
     }
 
-    static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
+    bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) const
+    {
         //const auto start_method = get_now();
+        if (fakeFlag == 1)
+        {
+            return true;
+        }
 
         const string url = base + "/payments";
         thread_local CurlHandle curl_wrapper;
@@ -710,6 +720,7 @@ private:
     bool fallback_down{false};
     bool default_down{false};
     double fee_difference{0.0};
+    int fakeFlag{0};
     int fallback_interval_ms{1000};
     atomic<bool> running{true};
     std::chrono::high_resolution_clock::time_point last_fallback;
