@@ -33,6 +33,13 @@ using namespace rapidjson;
 
 constexpr bool const_performance_metrics_enabled = false;
 
+enum class ProcessorResult {
+    Default,
+    Fallback,
+    Discard,
+    TryAgain
+};
+
 struct Payment {
     string correlationId;
     double amount{};
@@ -392,7 +399,7 @@ private:
             //record_profiler_value("parsing", start_parse);
 
             auto [processor, ts] = process_payment(json_str, isFallbackPool);
-            if (processor == "try_again") {
+            if (processor == ProcessorResult::TryAgain) {
                 enqueue(worker_id, r);
             }
             else
@@ -430,15 +437,20 @@ private:
         return true;
     }
 
-    pair<string, uint64_t> process_payment(string& json, bool isFallbackPool)
+    pair<ProcessorResult, uint64_t> process_payment(string& json, bool isFallbackPool)
     {
         //const auto start = get_now();
 
         auto [payload, ts] = create_processor_payload(json);
-        string primary = isFallbackPool ? test_url : main_url;
-        string secondary = isFallbackPool ? main_url : test_url;
-        string primary_label = (primary == default_processor ? "default" : "fallback");
-        string secondary_label = (secondary == default_processor ? "default" : "fallback");
+        const string primary = isFallbackPool ? test_url : main_url;
+        const string secondary = isFallbackPool ? main_url : test_url;
+
+        /* preciso melhorar isso */
+        //ProcessorResult primary_label = (primary == default_processor ? ProcessorResult::Default : ProcessorResult::Fallback);
+        //ProcessorResult secondary_label = (secondary == default_processor ? ProcessorResult::Default : ProcessorResult::Fallback);
+
+        ProcessorResult primary_label = ProcessorResult::Default;
+        ProcessorResult secondary_label = ProcessorResult::Fallback;
 
         double elapsed = 0.0; long code = 0;
         bool ok = send_to_processor(primary, payload, elapsed, code);
@@ -456,12 +468,12 @@ private:
         if (code == 422)
         {
             //record_profiler_value("process_payment", start);
-            return {"discard", ts};
+            return {ProcessorResult::Discard, ts};
         }
 
         if (!fallback_enabled)
         {
-            return {"try_again", ts};
+            return {ProcessorResult::TryAgain, ts};
         }
 
         double elapsed2 = 0.0; long code2 = 0;
@@ -474,10 +486,10 @@ private:
         if (code == 422)
         {
            // record_profiler_value("process_payment", start);
-            return {"discard", ts};
+            return {ProcessorResult::Discard, ts};
         }
         //record_profiler_value("process_payment", start);
-        return {"try_again", ts};
+        return {ProcessorResult::TryAgain, ts};
     }
 
     void handle_response(const string& url, const double elapsed, const long code)
@@ -607,15 +619,11 @@ private:
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                  tm.tm_hour, tm.tm_min, tm.tm_sec);
 
-        // remove last char '{' from json
-        if (json.back() == '}')
-        {
-            // remove lastcharacter
-            json.pop_back();
+        // remove lastcharacter
+        json.pop_back();
 
-            // add requestedAt field
-            json += ",\"requestedAt\":\"" + string(requestedAt) + "\"}";
-        }
+        // add requestedAt field
+        json += R"(,"requestedAt":")" + string(requestedAt) + R"("}")";
 
         //record_profiler_value("create_processor_payload", start);
 
@@ -636,7 +644,6 @@ private:
         }
 
         curl_wrapper.clear_response(); // reuse buffer
-
         curl_wrapper.set_payload(url, payload); // dynamic update only
 
         const auto start = chrono::steady_clock::now();
@@ -658,7 +665,7 @@ private:
         return (res == CURLE_OK && code == 200);
     }
 
-    void store_processed(const string& json, const string& processor, uint64_t timestamp)
+    void store_processed(const string& json, const ProcessorResult processor, const uint64_t timestamp) const
     {
         //const auto start = get_now();
 
@@ -666,15 +673,17 @@ private:
         double amount = 0.0;
         size_t amount_pos = json.find("\"amount\":");
         if (amount_pos != string::npos) {
-            size_t start_pos = amount_pos + 9; // length of "\"amount\":"
+            const size_t start_pos = amount_pos + 9; // length of "\"amount\":"
             size_t end_pos = json.find_first_of(",}", start_pos);
             if (end_pos != string::npos) {
-                string amount_str = json.substr(start_pos, end_pos - start_pos);
+                const string amount_str = json.substr(start_pos, end_pos - start_pos);
                 amount = stod(amount_str);
             }
         }
 
-        auto& map = (processor == "fallback" ? processed_fallback_map : processed_default_map);
+        auto& map = fallback_enabled ?
+                    (processor == ProcessorResult::Fallback ? processed_fallback_map : processed_default_map)
+                    : processed_default_map;
 
         std::lock_guard<std::mutex> lock(processed_mutex);
         Summary& s = map[timestamp];
