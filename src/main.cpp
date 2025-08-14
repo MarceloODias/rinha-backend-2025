@@ -34,11 +34,13 @@ using namespace rapidjson;
 constexpr bool const_performance_metrics_enabled = false;
 
 struct Payment {
+    uint64_t timestamp;
     string correlationId;
     double amount{};
 };
 
 struct RawPayment {
+    uint64_t timestamp;
     std::array<uint8_t, 70> data{};
     size_t size{};
 };
@@ -383,6 +385,7 @@ private:
             d.SetObject();
             d.Parse<rapidjson::kParseDefaultFlags>(reinterpret_cast<const char*>(r.data.data()), r.size);
             Payment p;
+            p.timestamp = r.timestamp;
             p.correlationId = d["correlationId"].GetString();
             p.amount = d["amount"].GetDouble();
             record_profiler_value("parsing", start_parse);
@@ -591,8 +594,7 @@ private:
 
         // ---- Fast timestamp formatting ----
         char requestedAt[32];
-        auto now = chrono::system_clock::now();
-        long long ms_since_epoch = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+        const auto ms_since_epoch = p.timestamp;
         time_t t = ms_since_epoch / 1000;
         tm tm{};
         gmtime_r(&t, &tm);
@@ -711,6 +713,9 @@ private:
 static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
+    const auto now = chrono::system_clock::now();
+    const auto ms_since_epoch = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
+
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
     //size_t length = request->get_header("Content-Length", 0);
@@ -720,6 +725,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
         // std::thread([body]{
             RawPayment r;
+            r.timestamp = ms_since_epoch;
             r.size = body.size();
             std::memcpy(r.data.data(), body.data(), body.size());
 
