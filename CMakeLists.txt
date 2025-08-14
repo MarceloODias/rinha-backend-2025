@@ -45,7 +45,7 @@ else()
 endif()
 
 
-add_executable(payments-service src/main.cpp)
+add_executable(payments-service src/main.cpp src/raw_http_client.cpp)
 
 find_package(Threads REQUIRED)
 
