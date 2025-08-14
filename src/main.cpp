@@ -670,8 +670,8 @@ private:
 
         auto& map = (processor == "fallback" ? processed_fallback_map : processed_default_map);
 
-        Summary& s = map[timestamp];
         std::lock_guard<std::mutex> lock(processed_mutex);
+        Summary& s = map[timestamp];
         s.totalRequests++;
         s.totalAmount += p.amount;
 
