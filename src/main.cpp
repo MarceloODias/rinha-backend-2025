@@ -352,7 +352,7 @@ public:
     }
 
 private:
-    void profiler_loop()
+    void profiler_loop() const
     {
         while (running)
         {
@@ -449,8 +449,8 @@ private:
         //ProcessorResult primary_label = (primary == default_processor ? ProcessorResult::Default : ProcessorResult::Fallback);
         //ProcessorResult secondary_label = (secondary == default_processor ? ProcessorResult::Default : ProcessorResult::Fallback);
 
-        ProcessorResult primary_label = ProcessorResult::Default;
-        ProcessorResult secondary_label = ProcessorResult::Fallback;
+        auto primary_label = ProcessorResult::Default;
+        auto secondary_label = ProcessorResult::Fallback;
 
         double elapsed = 0.0; long code = 0;
         bool ok = send_to_processor(primary, payload, elapsed, code);
@@ -623,7 +623,7 @@ private:
         json.pop_back();
 
         // add requestedAt field
-        json += R"(,"requestedAt":")" + string(requestedAt) + R"("}")";
+        json += R"(,"requestedAt":")" + string(requestedAt) + R"("})";
 
         //record_profiler_value("create_processor_payload", start);
 
