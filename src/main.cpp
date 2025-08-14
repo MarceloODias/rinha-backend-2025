@@ -310,7 +310,7 @@ public:
             return result;
         }
 
-        const uint64_t from_sec = (from_ms / 1000) * 1000;
+        const uint64_t from_sec = ((from_ms + 1000) / 1000) * 1000;
         const uint64_t to_sec = (to_ms / 1000) * 1000;
 
         // std::lock_guard<std::mutex> lock(processed_mutex);
