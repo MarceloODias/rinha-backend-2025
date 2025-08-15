@@ -258,9 +258,11 @@ public:
 
         const char* interIntervalCount = getenv("INTER_INTERVAL");
         inter_interval = interIntervalCount ? atoi(interIntervalCount) : 0;
+        std::cout << "INTER_INTERVAL=" << inter_interval << std::endl;
 
         const char* emptyIntervalCount = getenv("EMPTY_INTERVAL");
         empty_interval = emptyIntervalCount ? atoi(emptyIntervalCount) : 100;
+        std::cout << "EMPTY_INTERVAL=" << empty_interval << std::endl;
 
         const char* def = getenv("PROCESSOR_URL");
         const char* fb = getenv("FALLBACK_PROCESSOR_URL");
