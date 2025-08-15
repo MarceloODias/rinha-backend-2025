@@ -60,7 +60,7 @@ struct CurlHandle {
     CURL* handle = nullptr;
     struct curl_slist* headers = nullptr;
 
-    //std::string response_buffer;
+    std::string response_buffer;
 
     CurlHandle(const std::string& url) {
         handle = curl_easy_init();
@@ -72,8 +72,8 @@ struct CurlHandle {
             //curl_easy_setopt(handle, CURLOPT_TIMEOUT, 1L); // total timeout: 10 seconds
             curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
             curl_easy_setopt(handle, CURLOPT_POST, 1L);
-            //curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
-            //curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
+            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
+            curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
 
             // Optional: set timeouts or connection reuse options
             curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
@@ -89,7 +89,7 @@ struct CurlHandle {
         if (handle) curl_easy_cleanup(handle);
     }
 
-    /*
+
     void clear_response() {
         response_buffer.clear();
     }
@@ -97,7 +97,6 @@ struct CurlHandle {
     const std::string& response() const {
         return response_buffer;
     }
-    */
 
     void set_payload(const std::string& body) const {
         curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.c_str());
@@ -658,7 +657,7 @@ private:
             return false;
         }
 
-        //curl_wrapper.clear_response(); // reuse buffer
+        curl_wrapper.clear_response(); // reuse buffer
         curl_wrapper.set_payload(payload); // dynamic update only
 
         const auto start = chrono::steady_clock::now();
