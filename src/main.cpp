@@ -9,7 +9,6 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <chrono>
-#include <ctime>
 #include <thread>
 #include <atomic>
 #include <map>
@@ -50,6 +49,7 @@ struct RawPayment {
     size_t size{};
 };
 
+
 static size_t write_callback(void* contents, const size_t size, const size_t nmemb, void* userp) {
     auto* response = static_cast<std::string*>(userp);
     response->append(static_cast<char*>(contents), size * nmemb);
@@ -59,17 +59,21 @@ static size_t write_callback(void* contents, const size_t size, const size_t nme
 struct CurlHandle {
     CURL* handle = nullptr;
     struct curl_slist* headers = nullptr;
-    std::string response_buffer;
 
-    CurlHandle() {
+    //std::string response_buffer;
+
+    CurlHandle(const std::string& url) {
         handle = curl_easy_init();
         if (handle) {
             headers = curl_slist_append(headers, "Content-Type: application/json");
 
+            curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+
+            //curl_easy_setopt(handle, CURLOPT_TIMEOUT, 1L); // total timeout: 10 seconds
             curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
             curl_easy_setopt(handle, CURLOPT_POST, 1L);
-            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
+            //curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
+            //curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
 
             // Optional: set timeouts or connection reuse options
             curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
@@ -85,6 +89,7 @@ struct CurlHandle {
         if (handle) curl_easy_cleanup(handle);
     }
 
+    /*
     void clear_response() {
         response_buffer.clear();
     }
@@ -92,9 +97,9 @@ struct CurlHandle {
     const std::string& response() const {
         return response_buffer;
     }
+    */
 
-    void set_payload(const std::string& url, const std::string& body) {
-        curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
+    void set_payload(const std::string& body) const {
         curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.c_str());
     }
 };
@@ -143,13 +148,13 @@ void reset_profiler()
 
 string get_local_time()
 {
-    auto now = std::chrono::system_clock::now();
-    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm local_tm;
     localtime_r(&t, &local_tm);
 
     // Get milliseconds part
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
 
     std::stringstream ss;
     ss << std::put_time(&local_tm, "%Y-%m-%d %H:%M:%S");
@@ -169,7 +174,7 @@ static uint64_t parse_timestamp_ms(const string& ts)
     }
     tm.tm_year -= 1900;
     tm.tm_mon -= 1;
-    time_t seconds = timegm(&tm);
+    const time_t seconds = timegm(&tm);
     return static_cast<uint64_t>(seconds) * 1000ULL + static_cast<uint64_t>(ms);
 }
 
@@ -248,7 +253,7 @@ public:
 
         const char* def = getenv("PROCESSOR_URL");
         const char* fb = getenv("FALLBACK_PROCESSOR_URL");
-        default_processor = def ? string(def) : "http://localhost:8001";
+        default_processor = def ? string(def) : "http://localhost:8001/payments";
         fallback_processor = fb ? string(fb) : default_processor;
         main_url = default_processor;
         test_url = fallback_processor;
@@ -289,11 +294,12 @@ public:
         }
     }
 
-    void enqueue(size_t queue_idx, const RawPayment& r) {
+    void enqueue(size_t queue_idx, const RawPayment& r) const
+    {
         //const auto start = get_now();
         WorkerQueue& q = *queues[queue_idx % queues.size()];
         {
-            size_t pos = q.tail++;
+            const size_t pos = q.tail++;
             q.queue[pos % q.queue.size()] = r;
         }
 
@@ -308,8 +314,8 @@ public:
     {
         SummaryPair result;
 
-        uint64_t from_ms = parse_timestamp_ms(from);
-        uint64_t to_ms = parse_timestamp_ms(to);
+        const uint64_t from_ms = parse_timestamp_ms(from);
+        const uint64_t to_ms = parse_timestamp_ms(to);
         if (to_ms < from_ms) {
             return result;
         }
@@ -332,7 +338,7 @@ public:
 
     static Document service_health(const string& base_url) {
         Document result; result.SetObject();
-        string url = base_url + "/payments/service-health";
+        const string url = base_url + "/payments/service-health";
         string body;
         CURL* curl = curl_easy_init();
         if (!curl) return result;
@@ -358,7 +364,7 @@ private:
         }
     }
 
-    void worker_loop(size_t worker_id) {
+    void worker_loop(const size_t worker_id) {
         thread_local bool pinned = false;
         if (!pinned) {
             static std::atomic<int> next_cpu{0};
@@ -416,14 +422,15 @@ private:
         }
     }
 
-    bool fetch_next(size_t worker_id, RawPayment& r) {
+    bool fetch_next(size_t worker_id, RawPayment& r) const
+    {
         //const auto start = get_now();
 
         WorkerQueue& q = *queues[worker_id];
         if (!running || q.head >= q.tail) {
             return false;
         }
-        size_t idx = q.head++;
+        const size_t idx = q.head++;
         r = q.queue[idx % q.queue.size()];
 
         //record_profiler_value("fetch-queue", start);
@@ -501,7 +508,7 @@ private:
 
                 if (default_down && fallback_down)
                 {
-                    print_log("Both is down, waiting to recover... " + get_local_time());
+                    //print_log("Both is down, waiting to recover... " + get_local_time());
                     this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
                 }
                 else if (default_down && !fallback_down && using_default_as_main)
@@ -539,7 +546,7 @@ private:
         //record_profiler_value("handle_response", start);
     }
 
-    void update_time(const string& url, double elapsed)
+    void update_time(const string& url, const double elapsed)
     {
         if (url == default_processor) {
             default_time_ms = elapsed;
@@ -557,7 +564,7 @@ private:
 
         swap(main_url, test_url);
 
-        if (!const_performance_metrics_enabled)
+        if constexpr (!const_performance_metrics_enabled)
         {
             return;
         }
@@ -596,7 +603,7 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
-    pair<string, uint64_t> create_processor_payload(string& json) {
+    static pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
 
         thread_local char requestedAt[32];
@@ -629,8 +636,7 @@ private:
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
         //const auto start_method = get_now();
 
-        const string url = base + "/payments";
-        thread_local CurlHandle curl_wrapper;
+        thread_local CurlHandle curl_wrapper(base);
 
         CURL* curl = curl_wrapper.handle;
         if (!curl) {
@@ -639,8 +645,8 @@ private:
             return false;
         }
 
-        curl_wrapper.clear_response(); // reuse buffer
-        curl_wrapper.set_payload(url, payload); // dynamic update only
+        //curl_wrapper.clear_response(); // reuse buffer
+        curl_wrapper.set_payload(payload); // dynamic update only
 
         const auto start = chrono::steady_clock::now();
         const CURLcode res = curl_easy_perform(curl);
@@ -754,7 +760,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
 
 SummaryPair call_other_instance(const string& other, const string& from, const string& to) {
     SummaryPair result;
-    string url = other + "/payments-summary?from=" + from + "&to=" + to + "&internal=true";
+    const string url = other + "/payments-summary?from=" + from + "&to=" + to + "&internal=true";
     string body;
     CURL* curl = curl_easy_init();
     if (!curl) return result;
