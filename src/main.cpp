@@ -370,7 +370,8 @@ private:
             RawPayment r;
             bool has = fetch_next(worker_id, r);
             if (!has) {
-                break;
+                this_thread::sleep_for(chrono::milliseconds(1));
+                continue;
             }
 
             bool isFallbackPool = false;
@@ -416,7 +417,7 @@ private:
         //const auto start = get_now();
 
         WorkerQueue& q = *queues[worker_id];
-        if (!running && q.head >= q.tail) {
+        if (!running || q.head >= q.tail) {
             return false;
         }
         size_t idx = q.head++;
