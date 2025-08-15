@@ -9,6 +9,7 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <chrono>
+#include <ctime>
 #include <thread>
 #include <atomic>
 #include <map>
@@ -220,6 +221,7 @@ void print_log(const string& message)
         return;
     }
     std::cout << message << std::endl;
+
 }
 
 // ==== PROFILER ====
@@ -393,13 +395,12 @@ private:
             auto json_str = string(json, r.size);
             //record_profiler_value("parsing", start_parse);
 
-            auto [processor, ts] = process_payment(json_str, isFallbackPool);
+            auto [processor, ts, payload] = process_payment(json_str, isFallbackPool);
             if (processor == ProcessorResult::TryAgain) {
                 enqueue(worker_id, r);
             }
-            else
-            {
-                store_processed(json_str, processor, ts);
+            else if (processor != ProcessorResult::Discard) {
+                store_processed(payload, processor, ts);
             }
 
             if (isFallbackPool)
@@ -430,7 +431,7 @@ private:
         return true;
     }
 
-    pair<ProcessorResult, uint64_t> process_payment(string& json, bool isFallbackPool)
+    tuple<ProcessorResult, uint64_t, string> process_payment(string& json, bool isFallbackPool)
     {
         //const auto start = get_now();
 
@@ -456,17 +457,17 @@ private:
         if (ok) {
 
             //record_profiler_value("process_payment", start);
-            return {primary_label, ts};
+            return {primary_label, ts, move(payload)};
         }
         if (code == 422)
         {
             //record_profiler_value("process_payment", start);
-            return {ProcessorResult::Discard, ts};
+            return {ProcessorResult::Discard, ts, move(payload)};
         }
 
         if (!fallback_enabled)
         {
-            return {ProcessorResult::TryAgain, ts};
+            return {ProcessorResult::TryAgain, ts, move(payload)};
         }
 
         double elapsed2 = 0.0; long code2 = 0;
@@ -474,15 +475,15 @@ private:
         handle_response(secondary, elapsed2, code2);
         if (ok) {
             //record_profiler_value("process_payment", start);
-            return {secondary_label, ts};
+            return {secondary_label, ts, move(payload)};
         }
         if (code == 422)
         {
            // record_profiler_value("process_payment", start);
-            return {ProcessorResult::Discard, ts};
+            return {ProcessorResult::Discard, ts, move(payload)};
         }
         //record_profiler_value("process_payment", start);
-        return {ProcessorResult::TryAgain, ts};
+        return {ProcessorResult::TryAgain, ts, move(payload)};
     }
 
     void handle_response(const string& url, const double elapsed, const long code)
@@ -595,32 +596,34 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
-    static pair<string, uint64_t> create_processor_payload(string& json) {
+    pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
 
-        // ---- Fast timestamp formatting ----
-        char requestedAt[32];
-        auto now = chrono::system_clock::now();
-        long long ms_since_epoch = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()).count();
-        ms_since_epoch = (ms_since_epoch / 1000) * 1000; // truncate to seconds
-        time_t t = ms_since_epoch / 1000;
-        tm tm{};
-        gmtime_r(&t, &tm);
+        thread_local char requestedAt[32];
+        thread_local time_t last_sec = 0;
+        thread_local size_t ts_len = 0;
 
-        snprintf(requestedAt, sizeof(requestedAt),
-                 "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
-                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                 tm.tm_hour, tm.tm_min, tm.tm_sec);
+        const time_t now = time(nullptr);
+        if (now != last_sec) {
+            last_sec = now;
+            tm tm{};
+            gmtime_r(&now, &tm);
+            ts_len = snprintf(requestedAt, sizeof(requestedAt),
+                             "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                             tm.tm_hour, tm.tm_min, tm.tm_sec);
+        }
+        uint64_t ms_since_epoch = static_cast<uint64_t>(now) * 1000;
 
-        // remove lastcharacter
         json.pop_back();
-
-        // add requestedAt field
-        json += R"(,"requestedAt":")" + string(requestedAt) + R"("})";
+        json.reserve(json.size() + 40);
+        json.append(R"(,"requestedAt":")");
+        json.append(requestedAt, ts_len);
+        json.append(R"("})");
 
         //record_profiler_value("create_processor_payload", start);
 
-        return {json, static_cast<uint64_t>(ms_since_epoch)};
+        return {std::move(json), ms_since_epoch};
     }
 
     static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
@@ -852,7 +855,6 @@ int main(const int, char**) {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
-
     std::cout << "Initializing the paths..." << std::endl;
 
     const auto payments = make_shared<Resource>();
