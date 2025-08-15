@@ -66,8 +66,8 @@ struct CurlHandle {
 
             // Optional: set timeouts or connection reuse options
             curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 30L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 15L);
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 300L);
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 300L);
         }
     }
 
@@ -893,7 +893,7 @@ int main(const int, char**) {
     settings->set_worker_limit(concurrency);
     settings->set_keep_alive(true);
     settings->set_default_header("Connection", "keep-alive");
-    settings->set_connection_timeout(std::chrono::seconds(60));
+    settings->set_connection_timeout(std::chrono::seconds(600));
 
     Service rest_service;
     rest_service.publish(payments);
