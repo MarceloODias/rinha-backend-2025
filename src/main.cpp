@@ -391,16 +391,16 @@ private:
 
             //const auto start_parse = get_now();
             const auto json = reinterpret_cast<const char*>(r.data.data());
-            auto json_str = string(json, r.size);
+            auto json_str = string(json, r.size + 40);
             //record_profiler_value("parsing", start_parse);
 
-            auto [processor, ts] = process_payment(json_str, isFallbackPool);
+            auto [processor, ts, payload] = process_payment(json_str, isFallbackPool);
             if (processor == ProcessorResult::TryAgain) {
                 enqueue(worker_id, r);
             }
             else
             {
-                store_processed(json_str, processor, ts);
+                store_processed(payload, processor, ts);
             }
 
             if (isFallbackPool)
@@ -431,7 +431,7 @@ private:
         return true;
     }
 
-    pair<ProcessorResult, uint64_t> process_payment(string& json, bool isFallbackPool)
+    tuple<ProcessorResult, uint64_t, string> process_payment(string& json, bool isFallbackPool)
     {
         //const auto start = get_now();
 
@@ -457,17 +457,17 @@ private:
         if (ok) {
 
             //record_profiler_value("process_payment", start);
-            return {primary_label, ts};
+            return {primary_label, ts, move(payload)};
         }
         if (code == 422)
         {
             //record_profiler_value("process_payment", start);
-            return {ProcessorResult::Discard, ts};
+            return {ProcessorResult::Discard, ts, move(payload)};
         }
 
         if (!fallback_enabled)
         {
-            return {ProcessorResult::TryAgain, ts};
+            return {ProcessorResult::TryAgain, ts, move(payload)};
         }
 
         double elapsed2 = 0.0; long code2 = 0;
@@ -475,15 +475,15 @@ private:
         handle_response(secondary, elapsed2, code2);
         if (ok) {
             //record_profiler_value("process_payment", start);
-            return {secondary_label, ts};
+            return {secondary_label, ts, move(payload)};
         }
         if (code == 422)
         {
            // record_profiler_value("process_payment", start);
-            return {ProcessorResult::Discard, ts};
+            return {ProcessorResult::Discard, ts, move(payload)};
         }
         //record_profiler_value("process_payment", start);
-        return {ProcessorResult::TryAgain, ts};
+        return {ProcessorResult::TryAgain, ts, move(payload)};
     }
 
     void handle_response(const string& url, const double elapsed, const long code)
@@ -596,7 +596,7 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
-    static pair<string, uint64_t> create_processor_payload(string& json) {
+    pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
 
         thread_local char requestedAt[32];
@@ -616,7 +616,7 @@ private:
         uint64_t ms_since_epoch = static_cast<uint64_t>(now) * 1000;
 
         json.pop_back();
-        json.reserve(json.size() + 40);
+        //json.reserve(json.size() + 40);
         json.append(R"(,"requestedAt":")");
         json.append(requestedAt, ts_len);
         json.append(R"("})");
@@ -855,7 +855,6 @@ int main(const int, char**) {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
-
     std::cout << "Initializing the paths..." << std::endl;
 
     const auto payments = make_shared<Resource>();
