@@ -221,6 +221,7 @@ void print_log(const string& message)
         return;
     }
     std::cout << message << std::endl;
+
 }
 
 // ==== PROFILER ====
@@ -391,15 +392,14 @@ private:
 
             //const auto start_parse = get_now();
             const auto json = reinterpret_cast<const char*>(r.data.data());
-            auto json_str = string(json, r.size + 40);
+            auto json_str = string(json, r.size);
             //record_profiler_value("parsing", start_parse);
 
             auto [processor, ts, payload] = process_payment(json_str, isFallbackPool);
             if (processor == ProcessorResult::TryAgain) {
                 enqueue(worker_id, r);
             }
-            else
-            {
+            else if (processor != ProcessorResult::Discard) {
                 store_processed(payload, processor, ts);
             }
 
@@ -603,7 +603,7 @@ private:
         thread_local time_t last_sec = 0;
         thread_local size_t ts_len = 0;
 
-        time_t now = time(nullptr);
+        const time_t now = time(nullptr);
         if (now != last_sec) {
             last_sec = now;
             tm tm{};
@@ -616,7 +616,7 @@ private:
         uint64_t ms_since_epoch = static_cast<uint64_t>(now) * 1000;
 
         json.pop_back();
-        //json.reserve(json.size() + 40);
+        json.reserve(json.size() + 40);
         json.append(R"(,"requestedAt":")");
         json.append(requestedAt, ts_len);
         json.append(R"("})");
