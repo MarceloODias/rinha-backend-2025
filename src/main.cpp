@@ -220,6 +220,14 @@ void profiler_handler(const shared_ptr<Session>& session) {
         {"Connection", "close" }});
 }
 
+void purger_handler(const shared_ptr<Session>& session) {
+    static const Bytes response;
+    static const multimap<string, string> headers = {
+        {"Content-Length", "0"}
+    };
+    session->yield(200, response, headers);
+}
+
 void print_log(const string& message)
 {
     if constexpr (!const_performance_metrics_enabled) {
@@ -250,6 +258,9 @@ public:
 
         const char* interIntervalCount = getenv("INTER_INTERVAL");
         inter_interval = interIntervalCount ? atoi(interIntervalCount) : 0;
+
+        const char* emptyIntervalCount = getenv("EMPTY_INTERVAL");
+        empty_interval = emptyIntervalCount ? atoi(emptyIntervalCount) : 100;
 
         const char* def = getenv("PROCESSOR_URL");
         const char* fb = getenv("FALLBACK_PROCESSOR_URL");
@@ -380,7 +391,7 @@ private:
             RawPayment r;
             bool has = fetch_next(worker_id, r);
             if (!has) {
-                this_thread::sleep_for(chrono::milliseconds(100));
+                this_thread::sleep_for(chrono::milliseconds(empty_interval));
                 continue;
             }
 
@@ -728,6 +739,7 @@ private:
     bool fallback_enabled{true};
     bool fallback_evaluated{true};
     int inter_interval{0};
+    int empty_interval{100};
 };
 
 static shared_ptr<PaymentService> service;
@@ -875,6 +887,10 @@ int main(const int, char**) {
     profiler->set_path("/profiler");
     profiler->set_method_handler("GET", profiler_handler);
 
+    const auto purger = make_shared<Resource>();
+    purger->set_path("/purge-payments");
+    purger->set_method_handler("POST", purger_handler);
+
     auto concurrency = std::thread::hardware_concurrency() * 2;
     const auto env_concurrency = std::getenv("CONCURRENCY");
     if (env_concurrency != nullptr) {
@@ -897,6 +913,7 @@ int main(const int, char**) {
     rest_service.publish(payments);
     rest_service.publish(summary);
     rest_service.publish(profiler);
+    rest_service.publish(purger);
     rest_service.start(settings);
 
     curl_global_cleanup();
