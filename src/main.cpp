@@ -643,7 +643,7 @@ private:
                              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                              tm.tm_hour, tm.tm_min, tm.tm_sec);
         }
-        uint64_t ms_since_epoch = static_cast<uint64_t>(now) * 1000;
+        uint64_t sec_since_epoch = static_cast<uint64_t>(now);
 
         json.pop_back();
         json.reserve(json.size() + 40);
@@ -653,7 +653,7 @@ private:
 
         //record_profiler_value("create_processor_payload", start);
 
-        return {std::move(json), ms_since_epoch};
+        return {std::move(json), sec_since_epoch};
     }
 
     bool send_to_processor(const size_t worker, const ProcessorResult processor, const string& payload, double& elapsed, long& code) const
