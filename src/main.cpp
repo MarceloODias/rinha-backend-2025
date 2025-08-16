@@ -643,6 +643,36 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
+    static pair<string, uint64_t> create_processor_payload(string& json) {
+        //const auto start = get_now();
+
+        thread_local char requestedAt[32];
+        thread_local time_t last_sec = 0;
+        thread_local size_t ts_len = 0;
+
+        const time_t now = time(nullptr);
+        if (now != last_sec) {
+            last_sec = now;
+            tm tm{};
+            gmtime_r(&now, &tm);
+            ts_len = snprintf(requestedAt, sizeof(requestedAt),
+                             "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                             tm.tm_hour, tm.tm_min, tm.tm_sec);
+        }
+        uint64_t sec_since_epoch = static_cast<uint64_t>(now);
+
+        json.pop_back();
+        json.reserve(json.size() + 40);
+        json.append(R"(,"requestedAt":")");
+        json.append(requestedAt, ts_len);
+        json.append(R"("})");
+
+        //record_profiler_value("create_processor_payload", start);
+
+        return {std::move(json), sec_since_epoch};
+    }
+
     pair<string, uint64_t> create_processor_payload_cached(string& json) {
         //const auto start = get_now();
         thread_local string* req_at;
