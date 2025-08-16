@@ -643,11 +643,10 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
-    pair<string, uint64_t> create_processor_payload(string& json) {
+    pair<string, uint64_t> create_processor_payload_cached(string& json) {
         //const auto start = get_now();
         thread_local string* req_at;
         thread_local time_t last_sec = 0;
-        thread_local size_t ts_len = 0;
 
         const time_t now = time(nullptr);
         const auto sec_since_epoch = static_cast<uint64_t>(now);
