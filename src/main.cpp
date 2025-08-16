@@ -9,7 +9,6 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <chrono>
-#include <ctime>
 #include <thread>
 #include <atomic>
 #include <map>
@@ -771,8 +770,8 @@ static shared_ptr<PaymentService> service;
 
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
-    constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
-    //size_t length = request->get_header("Content-Length", 0);
+
+    size_t length = request->get_header("Content-Length", 0);
     static size_t queue_index = 0;
     static size_t queue_size = service->queue_count();
 
@@ -833,17 +832,16 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
         other_url = getenv("OTHER_INSTANCE_URL");
     }
 
-    /*
     std::future<SummaryPair> other_future;
     if (other_url != nullptr) {
         other_future = std::async(std::launch::async, [other_url, from, to] {
             return call_other_instance(other_url, from, to);
         });
     }
-    */
+
     auto res = service->query(from, to);
     if (other_url != nullptr) {
-        auto otherRes = call_other_instance(other_url, from, to);
+        auto otherRes = other_future.get();
         res.def.totalRequests += otherRes.def.totalRequests;
         res.def.totalAmount += otherRes.def.totalAmount;
         res.fb.totalRequests += otherRes.fb.totalRequests;
@@ -879,8 +877,7 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 
     session->close(200, sb.GetString(), {
         { "Content-Type", "application/json" },
-        { "Content-Length", to_string(sb.GetSize())},
-        {"Connection", "keep-alive"}
+        { "Content-Length", to_string(sb.GetSize())}
     });
 }
 
