@@ -261,19 +261,11 @@ public:
         }
         processed_default_map.reserve(PROCESSED_CAPACITY);
         processed_fallback_map.reserve(PROCESSED_CAPACITY);
-        requested_at_cache.reserve(PROCESSED_CAPACITY);
 
         const time_t base = time(nullptr);
         for (size_t i = 0; i < PROCESSED_CAPACITY; ++i) {
             const time_t t = base + static_cast<time_t>(i);
-            tm tm{};
-            gmtime_r(&t, &tm);
-            char buf[32];
-            const size_t len = snprintf(buf, sizeof(buf),
-                                       "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
-                                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                                       tm.tm_hour, tm.tm_min, tm.tm_sec);
-            requested_at_cache.emplace(static_cast<uint64_t>(t), string(buf, len));
+
             processed_default_map.emplace(static_cast<uint64_t>(t), Summary{});
             processed_fallback_map.emplace(static_cast<uint64_t>(t), Summary{});
         }
@@ -364,14 +356,13 @@ public:
         const uint64_t to_sec = (to_ms / 1000);
 
         for (uint64_t ts = from_sec; ts <= to_sec; ts += 1) {
-            if (auto it = processed_default_map.find(ts); it != processed_default_map.end()) {
-                result.def.totalRequests += it->second.totalRequests;
-                result.def.totalAmount += it->second.totalAmount;
-            }
-            if (auto it = processed_fallback_map.find(ts); it != processed_fallback_map.end()) {
-                result.fb.totalRequests += it->second.totalRequests;
-                result.fb.totalAmount += it->second.totalAmount;
-            }
+            auto def = processed_default_map[ts];
+            result.def.totalRequests += def.totalRequests;
+            result.def.totalAmount += def.totalAmount;
+
+            auto fb = processed_fallback_map[ts];
+            result.fb.totalRequests += fb.totalRequests;
+            result.fb.totalAmount += fb.totalAmount;
         }
         return result;
     }
@@ -673,31 +664,6 @@ private:
         return {std::move(json), sec_since_epoch};
     }
 
-    pair<string, uint64_t> create_processor_payload_cached(string& json) {
-        //const auto start = get_now();
-        thread_local string* req_at;
-        thread_local time_t last_sec = 0;
-
-        const time_t now = time(nullptr);
-        const auto sec_since_epoch = static_cast<uint64_t>(now);
-
-        if (now != last_sec)
-        {
-            last_sec = now;
-            req_at = &requested_at_cache.at(sec_since_epoch);
-        }
-
-        json.pop_back();
-        json.reserve(json.size() + 40);
-        json.append(R"(,"requestedAt":")");
-        json.append(*req_at);
-        json.append(R"("})");
-
-        //record_profiler_value("create_processor_payload", start);
-
-        return {std::move(json), sec_since_epoch};
-    }
-
     bool send_to_processor(const size_t worker, const ProcessorResult processor, const string& payload, double& elapsed, long& code) const
     {
         //const auto start_method = get_now();
@@ -767,7 +733,6 @@ private:
         double amount;
     };
 
-    unordered_map<uint64_t, string> requested_at_cache;
     mutable unordered_map<uint64_t, Summary> processed_default_map;
     mutable unordered_map<uint64_t, Summary> processed_fallback_map;
 
