@@ -833,16 +833,17 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
         other_url = getenv("OTHER_INSTANCE_URL");
     }
 
+    /*
     std::future<SummaryPair> other_future;
     if (other_url != nullptr) {
         other_future = std::async(std::launch::async, [other_url, from, to] {
             return call_other_instance(other_url, from, to);
         });
     }
-
+    */
     auto res = service->query(from, to);
     if (other_url != nullptr) {
-        auto otherRes = other_future.get();
+        auto otherRes = call_other_instance(other_url, from, to);
         res.def.totalRequests += otherRes.def.totalRequests;
         res.def.totalAmount += otherRes.def.totalAmount;
         res.fb.totalRequests += otherRes.fb.totalRequests;
