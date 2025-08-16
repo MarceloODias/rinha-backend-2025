@@ -258,15 +258,16 @@ public:
             q->queue.resize(QUEUE_CAPACITY);
             queues.emplace_back(std::move(q));
         }
-        processed_default_map.reserve(PROCESSED_CAPACITY);
-        processed_fallback_map.reserve(PROCESSED_CAPACITY);
+
+        processed_default.reserve(PROCESSED_CAPACITY);
+        processed_fallback.reserve(PROCESSED_CAPACITY);
+
 
         const time_t base = time(nullptr);
+        processed_start = static_cast<uint64_t>(base);
         for (size_t i = 0; i < PROCESSED_CAPACITY; ++i) {
-            const time_t t = base + static_cast<time_t>(i);
-
-            processed_default_map.emplace(static_cast<uint64_t>(t), Summary{});
-            processed_fallback_map.emplace(static_cast<uint64_t>(t), Summary{});
+            processed_default.emplace_back(Summary{});
+            processed_fallback.emplace_back(Summary{});
         }
 
         std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
@@ -351,15 +352,21 @@ public:
             return result;
         }
 
-        const uint64_t from_sec = ((from_ms + 1000) / 1000);
+        uint64_t from_sec = ((from_ms + 1000) / 1000);
         const uint64_t to_sec = (to_ms / 1000);
 
+        if (from_sec < processed_start) from_sec = processed_start;
+
         for (uint64_t ts = from_sec; ts <= to_sec; ts += 1) {
-            auto def = processed_default_map[ts];
+            uint64_t index = ts - processed_start;
+
+            if (index >= PROCESSED_CAPACITY) break;
+
+            auto def = processed_default[index];
             result.def.totalRequests += def.totalRequests;
             result.def.totalAmount += def.totalAmount;
 
-            auto fb = processed_fallback_map[ts];
+            auto fb = processed_fallback[index];
             result.fb.totalRequests += fb.totalRequests;
             result.fb.totalAmount += fb.totalAmount;
         }
@@ -717,10 +724,10 @@ private:
         }
 
         auto& map = fallback_enabled ?
-                    (processor == ProcessorResult::Fallback ? processed_fallback_map : processed_default_map)
-                    : processed_default_map;
+                    (processor == ProcessorResult::Fallback ? processed_fallback : processed_default)
+                    : processed_default;
 
-        Summary& s = map[timestamp];
+        Summary& s = map[timestamp - processed_start];
         s.totalRequests++;
         s.totalAmount += amount;
 
@@ -732,8 +739,9 @@ private:
         double amount;
     };
 
-    mutable unordered_map<uint64_t, Summary> processed_default_map;
-    mutable unordered_map<uint64_t, Summary> processed_fallback_map;
+    mutable vector<Summary> processed_default;
+    mutable vector<Summary> processed_fallback;
+    uint64_t processed_start;
 
     struct WorkerQueue {
         vector<RawPayment> queue;
