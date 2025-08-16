@@ -337,7 +337,7 @@ public:
     void enqueue(size_t queue_idx, const RawPayment& r) const
     {
         //const auto start = get_now();
-        WorkerQueue& q = *queues[queue_idx % queues.size()];
+        WorkerQueue& q = *queues[queue_idx];
         {
             const size_t pos = q.tail++;
             q.queue[pos % q.queue.size()] = r;
@@ -645,13 +645,18 @@ private:
 
     pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
+        thread_local string* req_at;
+        thread_local time_t last_sec = 0;
+        thread_local size_t ts_len = 0;
 
         const time_t now = time(nullptr);
         const auto sec_since_epoch = static_cast<uint64_t>(now);
 
-        string temp;
-        auto it = requested_at_cache.at(sec_since_epoch);
-        const string* req_at = &it;
+        if (now != last_sec)
+        {
+            last_sec = now;
+            req_at = &requested_at_cache.at(sec_since_epoch);
+        }
 
         json.pop_back();
         json.reserve(json.size() + 40);
@@ -667,8 +672,10 @@ private:
     bool send_to_processor(const size_t worker, const ProcessorResult processor, const string& payload, double& elapsed, long& code) const
     {
         //const auto start_method = get_now();
+        thread_local CurlHandle& worker_default_handle = *curl_handles.at(worker).at(ProcessorResult::Default);
+        thread_local CurlHandle& worker_fallback_handle = *curl_handles.at(worker).at(ProcessorResult::Fallback);
 
-        auto& curl_wrapper = *curl_handles.at(worker).at(processor);
+        auto& curl_wrapper = processor == ProcessorResult::Default ? worker_default_handle : worker_fallback_handle;
         CURL* curl = curl_wrapper.handle;
 
         if (!curl) {
