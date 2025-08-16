@@ -2,17 +2,19 @@ version: '3.9'
 
 services:
   app1: &app
-    image: maruero/rinha-de-backend-2025:20250814_v2
+    image: maruero/rinha-de-backend-2025:20250816_v1
     hostname: app1
     environment:
       - FALLBACK_ENABLED=0
       - INTER_INTERVAL=2000
-      - PROCESSOR_URL=http://payment-processor-default:8080
-      - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
+      - EMPTY_INTERVAL=500
+      - PROCESSOR_URL=http://payment-processor-default:8080/payments
+      - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080/payments
       - OTHER_INSTANCE_URL=http://app2:8080
       - SOCKET=/var/tmp/sockets/app1.sock
       - CONCURRENCY=1
-      - WORKER_COUNT=2
+      - WORKER_COUNT=1
+    cpuset: "0,2"
     volumes:
       - sockets:/var/tmp/sockets
     networks:
@@ -21,7 +23,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
+          cpus: "0.25"
           memory: "64MB"
 
   app2:
@@ -29,17 +31,19 @@ services:
     hostname: app2
     environment:
       - INTER_INTERVAL=2000
+      - EMPTY_INTERVAL=500
       - FALLBACK_ENABLED=0
-      - PROCESSOR_URL=http://payment-processor-default:8080
-      - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
+      - PROCESSOR_URL=http://payment-processor-default:8080/payments
+      - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080/payments
       - OTHER_INSTANCE_URL=http://app1:8080
       - SOCKET=/var/tmp/sockets/app2.sock
       - CONCURRENCY=1
-      - WORKER_COUNT=2
+      - WORKER_COUNT=1
+    cpuset: "1,3"
     deploy:
       resources:
         limits:
-          cpus: "0.50"
+          cpus: "0.25"
           memory: "64MB"
 
   haproxy:
@@ -58,7 +62,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.50"
+          cpus: "1"
           memory: "222MB"
 
 volumes:
