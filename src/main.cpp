@@ -647,23 +647,11 @@ private:
         //const auto start = get_now();
 
         const time_t now = time(nullptr);
-        const uint64_t sec_since_epoch = static_cast<uint64_t>(now);
+        const auto sec_since_epoch = static_cast<uint64_t>(now);
 
-        const string* req_at = nullptr;
         string temp;
-        if (auto it = requested_at_cache.find(sec_since_epoch); it != requested_at_cache.end()) {
-            req_at = &it->second;
-        } else {
-            char buf[32];
-            tm tm{};
-            gmtime_r(&now, &tm);
-            const size_t len = snprintf(buf, sizeof(buf),
-                                       "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
-                                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                                       tm.tm_hour, tm.tm_min, tm.tm_sec);
-            temp.assign(buf, len);
-            req_at = &temp;
-        }
+        auto it = requested_at_cache.at(sec_since_epoch);
+        const string* req_at = &it;
 
         json.pop_back();
         json.reserve(json.size() + 40);
