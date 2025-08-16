@@ -56,6 +56,10 @@ static size_t write_callback(void* contents, const size_t size, const size_t nme
     return size * nmemb;
 }
 
+static size_t ignore_write_callback(void* /*contents*/, size_t size, size_t nmemb, void* /*userp*/) {
+    return size * nmemb; // Pretend to consume all data
+}
+
 struct CurlHandle {
     CURL* handle = nullptr;
     struct curl_slist* headers = nullptr;
@@ -72,8 +76,8 @@ struct CurlHandle {
             //curl_easy_setopt(handle, CURLOPT_TIMEOUT, 1L); // total timeout: 10 seconds
             curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
             curl_easy_setopt(handle, CURLOPT_POST, 1L);
-            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, write_callback);
-            curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response_buffer);
+            curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, ignore_write_callback);
+            curl_easy_setopt(handle, CURLOPT_WRITEDATA, nullptr);
 
             // Optional: set timeouts or connection reuse options
             curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
@@ -241,6 +245,7 @@ void print_log(const string& message)
 class PaymentService {
 public:
     static constexpr size_t QUEUE_CAPACITY = 10'000;
+    static constexpr size_t PROCESSED_CAPACITY = 300;
 
     PaymentService() {
         std::cout << "Initializing PaymentService v1.0..." << std::endl;
@@ -253,6 +258,9 @@ public:
             q->queue.resize(QUEUE_CAPACITY);
             queues.emplace_back(std::move(q));
         }
+        processed_default_map.reserve(PROCESSED_CAPACITY);
+        processed_fallback_map.reserve(PROCESSED_CAPACITY);
+
         std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
 
         const char* interIntervalCount = getenv("INTER_INTERVAL");
@@ -287,6 +295,9 @@ public:
 
         std::cout << "Configurations read" << std::endl;
         for (int i = 0; i < workerCountInt; ++i) {
+            curl_handles.emplace(i, std::unordered_map<ProcessorResult, std::unique_ptr<CurlHandle>>());
+            curl_handles.at(i).emplace(ProcessorResult::Default, std::make_unique<CurlHandle>(default_processor));
+            curl_handles.at(i).emplace(ProcessorResult::Fallback, std::make_unique<CurlHandle>(fallback_processor));
             workers.emplace_back([this, i]{ worker_loop(i); });
         }
 
@@ -413,7 +424,7 @@ private:
             auto json_str = string(json, r.size);
             //record_profiler_value("parsing", start_parse);
 
-            auto [processor, ts, payload] = process_payment(json_str, isFallbackPool);
+            auto [processor, ts, payload] = process_payment(worker_id, json_str, isFallbackPool);
             if (processor == ProcessorResult::TryAgain) {
                 enqueue(worker_id, r);
             }
@@ -450,7 +461,7 @@ private:
         return true;
     }
 
-    tuple<ProcessorResult, uint64_t, string> process_payment(string& json, bool isFallbackPool)
+    tuple<ProcessorResult, uint64_t, string> process_payment(const size_t worker_id, string& json, bool isFallbackPool)
     {
         //const auto start = get_now();
 
@@ -466,7 +477,7 @@ private:
         auto secondary_label = ProcessorResult::Fallback;
 
         double elapsed = 0.0; long code = 0;
-        bool ok = send_to_processor(primary, payload, elapsed, code);
+        bool ok = send_to_processor(worker_id, primary_label, payload, elapsed, code);
         if (isFallbackPool)
         {
             fallback_evaluated = false;
@@ -490,7 +501,7 @@ private:
         }
 
         double elapsed2 = 0.0; long code2 = 0;
-        ok = send_to_processor(secondary, payload, elapsed2, code2);
+        ok = send_to_processor(worker_id, secondary_label, payload, elapsed2, code2);
         handle_response(secondary, elapsed2, code2);
         if (ok) {
             //record_profiler_value("process_payment", start);
@@ -645,12 +656,13 @@ private:
         return {std::move(json), ms_since_epoch};
     }
 
-    static bool send_to_processor(const string& base, const string& payload, double& elapsed, long& code) {
+    bool send_to_processor(const size_t worker, const ProcessorResult processor, const string& payload, double& elapsed, long& code) const
+    {
         //const auto start_method = get_now();
 
-        thread_local CurlHandle curl_wrapper(base);
-
+        auto& curl_wrapper = *curl_handles.at(worker).at(processor);
         CURL* curl = curl_wrapper.handle;
+
         if (!curl) {
             elapsed = 0;
             code = 0;
@@ -721,6 +733,8 @@ private:
         std::condition_variable cv;
     };
 
+    unordered_map<size_t, unordered_map<ProcessorResult, std::unique_ptr<CurlHandle>>> curl_handles;
+
     vector<unique_ptr<WorkerQueue>> queues;
     vector<thread> workers;
     string default_processor;
@@ -749,18 +763,17 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     constexpr size_t length = 70; // Fixed length for simplicity, can be adjusted based on expected payload size
     //size_t length = request->get_header("Content-Length", 0);
-    static atomic<size_t> queue_index = {0};
+    static size_t queue_index = 0;
+    static size_t queue_size = service->queue_count();
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
 
-        // std::thread([body]{
-            RawPayment r;
-            r.size = body.size();
-            std::memcpy(r.data.data(), body.data(), body.size());
+        RawPayment r;
+        r.size = body.size();
+        std::memcpy(r.data.data(), body.data(), body.size());
 
-            const size_t idx = queue_index.fetch_add(1, std::memory_order_relaxed);
-            service->enqueue(idx % service->queue_count(), r);
-        // }).detach();
+        const size_t idx = queue_index++ % queue_size;
+        service->enqueue(idx, r);
 
         static const Bytes response;
         static const multimap<string, string> headers = {
@@ -780,7 +793,7 @@ SummaryPair call_other_instance(const string& other, const string& from, const s
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    CURLcode res = curl_easy_perform(curl);
+    const CURLcode res = curl_easy_perform(curl);
     long code = 0; curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
     curl_easy_cleanup(curl);
     if (res == CURLE_OK && code == 200) {
