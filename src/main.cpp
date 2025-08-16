@@ -360,10 +360,10 @@ public:
             return result;
         }
 
-        const uint64_t from_sec = ((from_ms + 1000) / 1000) * 1000;
-        const uint64_t to_sec = (to_ms / 1000) * 1000;
+        const uint64_t from_sec = ((from_ms + 1000) / 1000);
+        const uint64_t to_sec = (to_ms / 1000);
 
-        for (uint64_t ts = from_sec; ts <= to_sec; ts += 1000) {
+        for (uint64_t ts = from_sec; ts <= to_sec; ts += 1) {
             if (auto it = processed_default_map.find(ts); it != processed_default_map.end()) {
                 result.def.totalRequests += it->second.totalRequests;
                 result.def.totalAmount += it->second.totalAmount;
