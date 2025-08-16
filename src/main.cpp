@@ -9,6 +9,7 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <chrono>
+#include <ctime>
 #include <thread>
 #include <atomic>
 #include <map>
@@ -260,6 +261,22 @@ public:
         }
         processed_default_map.reserve(PROCESSED_CAPACITY);
         processed_fallback_map.reserve(PROCESSED_CAPACITY);
+        requested_at_cache.reserve(PROCESSED_CAPACITY);
+
+        const time_t base = time(nullptr);
+        for (size_t i = 0; i < PROCESSED_CAPACITY; ++i) {
+            const time_t t = base + static_cast<time_t>(i);
+            tm tm{};
+            gmtime_r(&t, &tm);
+            char buf[32];
+            const size_t len = snprintf(buf, sizeof(buf),
+                                       "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                                       tm.tm_hour, tm.tm_min, tm.tm_sec);
+            requested_at_cache.emplace(static_cast<uint64_t>(t), string(buf, len));
+            processed_default_map.emplace(static_cast<uint64_t>(t), Summary{});
+            processed_fallback_map.emplace(static_cast<uint64_t>(t), Summary{});
+        }
 
         std::cout << "WORKER_COUNT=" << workerCountInt << std::endl;
 
@@ -626,29 +643,32 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
-    static pair<string, uint64_t> create_processor_payload(string& json) {
+    pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
 
-        thread_local char requestedAt[32];
-        thread_local time_t last_sec = 0;
-        thread_local size_t ts_len = 0;
-
         const time_t now = time(nullptr);
-        if (now != last_sec) {
-            last_sec = now;
+        const uint64_t sec_since_epoch = static_cast<uint64_t>(now);
+
+        const string* req_at = nullptr;
+        string temp;
+        if (auto it = requested_at_cache.find(sec_since_epoch); it != requested_at_cache.end()) {
+            req_at = &it->second;
+        } else {
+            char buf[32];
             tm tm{};
             gmtime_r(&now, &tm);
-            ts_len = snprintf(requestedAt, sizeof(requestedAt),
-                             "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
-                             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                             tm.tm_hour, tm.tm_min, tm.tm_sec);
+            const size_t len = snprintf(buf, sizeof(buf),
+                                       "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+                                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                                       tm.tm_hour, tm.tm_min, tm.tm_sec);
+            temp.assign(buf, len);
+            req_at = &temp;
         }
-        uint64_t sec_since_epoch = static_cast<uint64_t>(now);
 
         json.pop_back();
         json.reserve(json.size() + 40);
         json.append(R"(,"requestedAt":")");
-        json.append(requestedAt, ts_len);
+        json.append(*req_at);
         json.append(R"("})");
 
         //record_profiler_value("create_processor_payload", start);
@@ -723,6 +743,7 @@ private:
         double amount;
     };
 
+    unordered_map<uint64_t, string> requested_at_cache;
     mutable unordered_map<uint64_t, Summary> processed_default_map;
     mutable unordered_map<uint64_t, Summary> processed_fallback_map;
 
