@@ -767,19 +767,19 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     static size_t queue_size = service->queue_count();
 
     session->fetch(length, [&](const shared_ptr<Session>& session, const Bytes& body) {
-        static const Bytes response;
-        static const multimap<string, string> headers = {
-            {"Content-Length", "0"}
-        };
-
-        session->yield(202, response, headers);
-
         RawPayment r;
         r.size = body.size();
         std::memcpy(r.data.data(), body.data(), body.size());
 
         const size_t idx = queue_index++ % queue_size;
         service->enqueue(idx, r);
+
+        static const Bytes response;
+        static const multimap<string, string> headers = {
+            {"Content-Length", "0"}
+        };
+
+        session->yield(202, response, headers);
     });
 }
 
