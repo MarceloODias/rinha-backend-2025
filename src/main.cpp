@@ -353,14 +353,13 @@ public:
         }
 
         uint64_t from_sec = ((from_ms + 1000) / 1000);
-        const uint64_t to_sec = (to_ms / 1000);
+        uint64_t to_sec = (to_ms / 1000);
 
         if (from_sec < processed_start) from_sec = processed_start;
+        if (to_sec - processed_start >= PROCESSED_CAPACITY) to_sec = processed_start + PROCESSED_CAPACITY - 1;
 
         for (uint64_t ts = from_sec; ts <= to_sec; ts += 1) {
             uint64_t index = ts - processed_start;
-
-            if (index >= PROCESSED_CAPACITY) break;
 
             auto def = processed_default[index];
             result.def.totalRequests += def.totalRequests;
