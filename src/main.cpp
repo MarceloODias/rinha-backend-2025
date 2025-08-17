@@ -437,7 +437,10 @@ private:
         auto json_str = string(json, r.size);
         //record_profiler_value("parsing", start_parse);
 
-        auto [processor, ts, payload] = process_payment(worker_id, json_str, isFallbackPool);
+        thread_local bool toggle = true;
+        toggle = !toggle; // Toggle to switch between default and fallback processor
+
+        auto [processor, ts, payload] = process_payment(worker_id, json_str, toggle);
         if (processor == ProcessorResult::TryAgain) {
             enqueue(worker_id, r);
         }
