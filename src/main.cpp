@@ -310,10 +310,6 @@ public:
             workers.emplace_back([this, i]{ worker_loop(i); });
         }
 
-        if (const_performance_metrics_enabled)
-        {
-            // workers.emplace_back([this]{ profiler_loop(); });
-        }
         std::cout << "Threads started" << std::endl;
 
         started = get_now();
@@ -403,15 +399,6 @@ private:
     }
 
     void worker_loop(const size_t worker_id) {
-        thread_local bool pinned = false;
-        if (!pinned) {
-            static std::atomic<int> next_cpu{0};
-            int total_cores = std::thread::hardware_concurrency();
-            int cpu_id = (next_cpu++ % (total_cores / 2)) + (total_cores / 2);
-            // pin_thread_to_core(cpu_id, "worker");
-            pinned = true;
-        }
-
         last_fallback = get_now();
 
         while (running) {
