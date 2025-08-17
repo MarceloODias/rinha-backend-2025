@@ -409,19 +409,24 @@ private:
                 continue;
             }
 
-            bool isFallbackPool = false;
-
             if (fallback_enabled)
             {
                 const auto now = get_now();
                 int elapsed = chrono::duration_cast<chrono::milliseconds>(now - last_fallback).count();
                 if (!fallback_is_running && elapsed >= fallback_interval_ms) {
                     fallback_is_running = true;
-                    isFallbackPool = true;
+
+                    // start a new thread and detach
+                    std::thread([this, worker_id, r] {
+                        std::cout << "Starting fallback at:" << get_local_time() << std::endl;
+                        process(worker_id, r, true);
+                    }).detach();
+
+                    continue;
                 }
             }
 
-            process(worker_id, r, isFallbackPool);
+            process(worker_id, r, false);
         }
     }
 
@@ -613,13 +618,13 @@ private:
         if (fb < def && improvement >= fee_difference) {
             if (using_default)
             {
-                std::cout << "def: " << def << " fb: " << fb << std::endl;
+                std::cout << "Using default - def: " << def << " fb: " << fb << std::endl;
                 trigger_switch("Fallback better");
             }
         } else {
             if (!using_default)
             {
-                std::cout << "fb: " << fb <<" - def: " << def << std::endl;
+                std::cout << "Not using default - fb: " << fb <<" - def: " << def << std::endl;
                 trigger_switch("Main better");
             }
         }
