@@ -481,28 +481,21 @@ private:
         //const auto start = get_now();
 
         auto [payload, ts] = create_processor_payload(json);
-        const string primary = isFallbackPool ? test_url : main_url;
-        const string secondary = isFallbackPool ? main_url : test_url;
-
-        /* preciso melhorar isso */
-        //ProcessorResult primary_label = (primary == default_processor ? ProcessorResult::Default : ProcessorResult::Fallback);
-        //ProcessorResult secondary_label = (secondary == default_processor ? ProcessorResult::Default : ProcessorResult::Fallback);
-
-        auto primary_label = ProcessorResult::Default;
-        auto secondary_label = ProcessorResult::Fallback;
+        const auto primary_label_local = isFallbackPool ? secondary_label : primary_label;
+        const auto secondary_label_local = isFallbackPool ? primary_label : secondary_label;
 
         double elapsed = 0.0; long code = 0;
-        bool ok = send_to_processor(worker_id, primary_label, payload, elapsed, code);
+        bool ok = send_to_processor(worker_id, primary_label_local, payload, elapsed, code);
         if (isFallbackPool)
         {
             fallback_evaluated = false;
         }
 
-        handle_response(primary, elapsed, code);
+        handle_response(primary_label_local, elapsed, code);
         if (ok) {
 
             //record_profiler_value("process_payment", start);
-            return {primary_label, ts, move(payload)};
+            return {primary_label_local, ts, move(payload)};
         }
         if (code == 422)
         {
@@ -516,11 +509,11 @@ private:
         }
 
         double elapsed2 = 0.0; long code2 = 0;
-        ok = send_to_processor(worker_id, secondary_label, payload, elapsed2, code2);
-        handle_response(secondary, elapsed2, code2);
+        ok = send_to_processor(worker_id, secondary_label_local, payload, elapsed2, code2);
+        handle_response(secondary_label_local, elapsed2, code2);
         if (ok) {
             //record_profiler_value("process_payment", start);
-            return {secondary_label, ts, move(payload)};
+            return {secondary_label_local, ts, move(payload)};
         }
         if (code == 422)
         {
@@ -531,13 +524,13 @@ private:
         return {ProcessorResult::TryAgain, ts, move(payload)};
     }
 
-    void handle_response(const string& url, const double elapsed, const long code)
+    void handle_response(const ProcessorResult processor, const double elapsed, const long code)
     {
         //const auto start = get_now();
         if (fallback_enabled)
         {
-            const bool using_default_as_main = (main_url == default_processor);
-            const bool default_called = (url == default_processor);
+            const bool using_default_as_main = (primary_label == ProcessorResult::Default);
+            const bool default_called = (processor == ProcessorResult::Default);
 
             if (code == 500)
             {
@@ -577,18 +570,18 @@ private:
                 }
             }
 
-            update_time(url, elapsed);
+            update_time(processor, elapsed);
             evaluate_switch();
         }
 
         //record_profiler_value("handle_response", start);
     }
 
-    void update_time(const string& url, const double elapsed)
+    void update_time(const ProcessorResult& processor, const double elapsed)
     {
-        if (url == default_processor) {
+        if (processor == ProcessorResult::Default) {
             default_time_ms = elapsed;
-        } else if (url == fallback_processor) {
+        } else {
             fallback_time_ms = elapsed;
         }
     }
@@ -601,6 +594,7 @@ private:
         }
 
         swap(main_url, test_url);
+        swap(primary_label, secondary_label);
 
         if constexpr (!const_performance_metrics_enabled)
         {
@@ -773,6 +767,8 @@ private:
     bool fallback_evaluated{true};
     int inter_interval{0};
     int empty_interval{100};
+    ProcessorResult primary_label = ProcessorResult::Default;
+    ProcessorResult secondary_label = ProcessorResult::Fallback;
 };
 
 static shared_ptr<PaymentService> service;
