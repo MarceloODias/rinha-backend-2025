@@ -30,7 +30,7 @@ using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = true;
+constexpr bool const_performance_metrics_enabled = false;
 
 enum class ProcessorResult {
     Default,
@@ -418,7 +418,7 @@ private:
 
                     // start a new thread and detach
                     std::thread([this, worker_id, r] {
-                        std::cout << "Starting fallback at:" << get_local_time() << std::endl;
+                        // std::cout << "Starting fallback at:" << get_local_time() << std::endl;
                         process(worker_id, r, true);
                     }).detach();
 
@@ -618,13 +618,13 @@ private:
         if (fb < def && improvement >= fee_difference) {
             if (using_default)
             {
-                std::cout << "Using default - def: " << def << " fb: " << fb << std::endl;
+                //std::cout << "Using default - def: " << def << " fb: " << fb << std::endl;
                 trigger_switch("Fallback better");
             }
         } else {
             if (!using_default)
             {
-                std::cout << "Not using default - fb: " << fb <<" - def: " << def << std::endl;
+                //std::cout << "Not using default - fb: " << fb <<" - def: " << def << std::endl;
                 trigger_switch("Main better");
             }
         }
