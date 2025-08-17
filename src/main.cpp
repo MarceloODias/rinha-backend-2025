@@ -451,7 +451,7 @@ private:
             last_fallback = get_now();
         }
 
-        if (inter_interval > 0)
+        if (inter_interval > 0 && !isFallbackPool)
         {
             this_thread::sleep_for(chrono::microseconds(inter_interval));
         }
