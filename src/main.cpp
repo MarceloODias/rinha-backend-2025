@@ -30,7 +30,7 @@ using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = false;
+constexpr bool const_performance_metrics_enabled = true;
 
 enum class ProcessorResult {
     Default,
@@ -689,6 +689,9 @@ private:
 
         elapsed = chrono::duration<double, milli>(end - start).count();
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+
+        string url = (processor == ProcessorResult::Default ? "default" : "fallback");
+        print_log( url + " - " + to_string(code) + " - " + to_string(elapsed) + "ms" + " " + get_local_time());
 
         /*
         if constexpr (const_performance_metrics_enabled)
