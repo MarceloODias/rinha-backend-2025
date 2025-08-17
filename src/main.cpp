@@ -352,14 +352,16 @@ public:
             return result;
         }
 
-        uint64_t from_sec = ((from_ms + 1000) / 1000);
+        int64_t from_sec = ((from_ms + 1000) / 1000);
         uint64_t to_sec = (to_ms / 1000);
 
-        if (from_sec < processed_start) from_sec = processed_start;
-        if (to_sec - processed_start >= PROCESSED_CAPACITY) to_sec = processed_start + PROCESSED_CAPACITY - 1;
+        from_sec = from_sec - processed_start;
+        to_sec = to_sec - processed_start;
 
-        for (uint64_t ts = from_sec; ts <= to_sec; ts += 1) {
-            uint64_t index = ts - processed_start;
+        if (from_sec < 0) from_sec = 0;
+        if (to_sec >= PROCESSED_CAPACITY) to_sec = PROCESSED_CAPACITY - 1;
+
+        for (uint64_t index = from_sec; index <= to_sec; index ++) {
 
             auto def = processed_default[index];
             result.def.totalRequests += def.totalRequests;
