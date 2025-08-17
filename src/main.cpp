@@ -81,10 +81,10 @@ struct CurlHandle {
 
             // Optional: set timeouts or connection reuse options
             curl_easy_setopt(handle, CURLOPT_TCP_KEEPALIVE, 1L);
-            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 300L);
+            curl_easy_setopt(handle, CURLOPT_TCP_KEEPIDLE, 360L);
             curl_easy_setopt(handle, CURLOPT_TCP_KEEPINTVL, 15L);
-            curl_easy_setopt(handle, CURLOPT_MAXLIFETIME_CONN, 300L);
-            curl_easy_setopt(handle, CURLOPT_MAXAGE_CONN, 300L);
+            curl_easy_setopt(handle, CURLOPT_MAXLIFETIME_CONN, 360L);
+            curl_easy_setopt(handle, CURLOPT_MAXAGE_CONN, 360L);
         }
     }
 
@@ -884,6 +884,9 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 }
 
 int main(const int, char**) {
+    std::cout << "Waiting cool down..." << std::endl;
+    this_thread::sleep_for(chrono::seconds(15));
+
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
 
@@ -930,7 +933,7 @@ int main(const int, char**) {
     settings->set_worker_limit(concurrency);
     settings->set_keep_alive(true);
     settings->set_default_header("Connection", "keep-alive");
-    settings->set_connection_timeout(std::chrono::seconds(300));
+    settings->set_connection_timeout(std::chrono::seconds(360));
 
     Service rest_service;
     rest_service.publish(payments);
