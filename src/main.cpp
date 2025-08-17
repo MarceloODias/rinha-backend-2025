@@ -884,9 +884,6 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
 }
 
 int main(const int, char**) {
-    std::cout << "Waiting cool down..." << std::endl;
-    this_thread::sleep_for(chrono::seconds(15));
-
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
 
@@ -899,6 +896,16 @@ int main(const int, char**) {
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
     service = make_shared<PaymentService>();
+
+    const char* cooldown = getenv("COOLDOWN");
+    int cooldownInt = cooldown ? atoi(cooldown) : 0;
+
+    std::cout << "Waiting cool down: " << cooldownInt << std::endl;
+    if (cooldownInt > 0)
+    {
+        this_thread::sleep_for(chrono::seconds(cooldownInt));
+    }
+
     std::cout << "Initializing the paths..." << std::endl;
 
     const auto payments = make_shared<Resource>();
