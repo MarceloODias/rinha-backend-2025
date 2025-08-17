@@ -30,7 +30,7 @@ using namespace restbed;
 using namespace std;
 using namespace rapidjson;
 
-constexpr bool const_performance_metrics_enabled = false;
+constexpr bool const_performance_metrics_enabled = true;
 
 enum class ProcessorResult {
     Default,
@@ -526,7 +526,7 @@ private:
 
                 if (default_down && fallback_down)
                 {
-                    //print_log("Both is down, waiting to recover... " + get_local_time());
+                    print_log("Both is down, waiting to recover... " + get_local_time());
                     this_thread::sleep_for(chrono::milliseconds(fallback_interval_ms / 2));
                 }
                 else if (default_down && !fallback_down && using_default_as_main)

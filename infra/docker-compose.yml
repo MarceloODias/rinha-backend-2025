@@ -5,9 +5,9 @@ services:
     image: maruero/rinha-de-backend-2025:20250816_v1
     hostname: app1
     environment:
+      - INTER_INTERVAL=500
+      - EMPTY_INTERVAL=100
       - FALLBACK_ENABLED=0
-      - INTER_INTERVAL=2000
-      - EMPTY_INTERVAL=500
       - PROCESSOR_URL=http://payment-processor-default:8080/payments
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080/payments
       - OTHER_INSTANCE_URL=http://app2:8080
@@ -30,8 +30,8 @@ services:
     <<: *app
     hostname: app2
     environment:
-      - INTER_INTERVAL=2000
-      - EMPTY_INTERVAL=500
+      - INTER_INTERVAL=500
+      - EMPTY_INTERVAL=100
       - FALLBACK_ENABLED=0
       - PROCESSOR_URL=http://payment-processor-default:8080/payments
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080/payments
