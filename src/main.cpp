@@ -421,29 +421,34 @@ private:
                 }
             }
 
-            //const auto start_parse = get_now();
-            const auto json = reinterpret_cast<const char*>(r.data.data());
-            auto json_str = string(json, r.size);
-            //record_profiler_value("parsing", start_parse);
+            process(worker_id, r, isFallbackPool);
+        }
+    }
 
-            auto [processor, ts, payload] = process_payment(worker_id, json_str, isFallbackPool);
-            if (processor == ProcessorResult::TryAgain) {
-                enqueue(worker_id, r);
-            }
-            else if (processor != ProcessorResult::Discard) {
-                store_processed(payload, processor, ts);
-            }
+    void process(const size_t worker_id, const RawPayment& r, bool isFallbackPool)
+    {
+        //const auto start_parse = get_now();
+        const auto json = reinterpret_cast<const char*>(r.data.data());
+        auto json_str = string(json, r.size);
+        //record_profiler_value("parsing", start_parse);
 
-            if (isFallbackPool)
-            {
-                fallback_is_running = false;
-                last_fallback = get_now();
-            }
+        auto [processor, ts, payload] = process_payment(worker_id, json_str, isFallbackPool);
+        if (processor == ProcessorResult::TryAgain) {
+            enqueue(worker_id, r);
+        }
+        else if (processor != ProcessorResult::Discard) {
+            store_processed(payload, processor, ts);
+        }
 
-            if (inter_interval > 0)
-            {
-                this_thread::sleep_for(chrono::microseconds(inter_interval));
-            }
+        if (isFallbackPool)
+        {
+            fallback_is_running = false;
+            last_fallback = get_now();
+        }
+
+        if (inter_interval > 0)
+        {
+            this_thread::sleep_for(chrono::microseconds(inter_interval));
         }
     }
 
@@ -614,7 +619,7 @@ private:
         } else {
             if (!using_default)
             {
-                std::cout << "def: " << def << " fb: " << fb << std::endl;
+                std::cout << "fb: " << fb <<" - def: " << def << std::endl;
                 trigger_switch("Main better");
             }
         }
