@@ -244,8 +244,8 @@ void print_log(const string& message)
 
 class PaymentService {
 public:
-    static constexpr size_t QUEUE_CAPACITY = 10'000;
-    static constexpr size_t PROCESSED_CAPACITY = 300;
+    static constexpr size_t QUEUE_CAPACITY = 100'000;
+    static constexpr size_t PROCESSED_CAPACITY = 3000;
 
     PaymentService() {
         std::cout << "Initializing PaymentService v1.0..." << std::endl;
