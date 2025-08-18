@@ -49,13 +49,14 @@ struct RawPayment {
     size_t size{};
 };
 
-
+/// libcurl callback that appends received data into a string.
 static size_t write_callback(void* contents, const size_t size, const size_t nmemb, void* userp) {
     auto* response = static_cast<std::string*>(userp);
     response->append(static_cast<char*>(contents), size * nmemb);
     return size * nmemb;
 }
 
+/// libcurl callback that discards the response body.
 static size_t ignore_write_callback(void* /*contents*/, size_t size, size_t nmemb, void* /*userp*/) {
     return size * nmemb; // Pretend to consume all data
 }
@@ -66,6 +67,7 @@ struct CurlHandle {
 
     std::string response_buffer;
 
+    /// Construct a handle configured for POST requests to the given URL.
     CurlHandle(const std::string& url) {
         handle = curl_easy_init();
         if (handle) {
@@ -88,20 +90,23 @@ struct CurlHandle {
         }
     }
 
+    /// Clean up the CURL handle and associated headers.
     ~CurlHandle() {
         if (headers) curl_slist_free_all(headers);
         if (handle) curl_easy_cleanup(handle);
     }
 
-
+    /// Reset the internal response buffer.
     void clear_response() {
         response_buffer.clear();
     }
 
+    /// Retrieve the current response buffer.
     const std::string& response() const {
         return response_buffer;
     }
 
+    /// Set the request body for the next POST operation.
     void set_payload(const std::string& body) const {
         curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.c_str());
     }
@@ -122,11 +127,13 @@ struct SummaryPair {
 unordered_map<string, std::atomic<long>> performance_data;
 std::unordered_map<string, std::atomic<long>> count_perf_data;
 
+/// Convenience wrapper returning the current high resolution clock time.
 std::chrono::high_resolution_clock::time_point get_now()
 {
     return std::chrono::high_resolution_clock::now();
 }
 
+/// Initialize profiling buckets and counters.
 void init_profiler()
 {
     for (const std::string& key : {
@@ -138,6 +145,7 @@ void init_profiler()
     }
 }
 
+/// Reset all profiling counters to zero.
 void reset_profiler()
 {
     for (const std::string& key : {
@@ -149,6 +157,7 @@ void reset_profiler()
     }
 }
 
+/// Return current local time formatted with millisecond precision.
 string get_local_time()
 {
     const auto now = std::chrono::system_clock::now();
@@ -166,6 +175,7 @@ string get_local_time()
     return ss.str();
 }
 
+/// Parse an ISO-8601 timestamp with milliseconds into a UNIX epoch in ms.
 static uint64_t parse_timestamp_ms(const string& ts)
 {
     std::tm tm{};
@@ -181,6 +191,7 @@ static uint64_t parse_timestamp_ms(const string& ts)
     return static_cast<uint64_t>(seconds) * 1000ULL + static_cast<uint64_t>(ms);
 }
 
+/// Produce a textual report summarising collected profiling data.
 string get_profiler_result()
 {
     stringstream response;
@@ -204,6 +215,7 @@ string get_profiler_result()
     return response_str;
 }
 
+/// Record elapsed time for a feature into profiler buckets.
 void record_profiler_value(const string& featureName, const std::chrono::high_resolution_clock::time_point& start) {
     if constexpr (!const_performance_metrics_enabled) {
         return;
@@ -215,6 +227,7 @@ void record_profiler_value(const string& featureName, const std::chrono::high_re
     count_perf_data.at(featureName).fetch_add(1, std::memory_order_relaxed);
 }
 
+/// HTTP handler that returns current profiler statistics.
 void profiler_handler(const shared_ptr<Session>& session) {
     const string response_str = get_profiler_result();
     session->close(OK, response_str, {
@@ -223,6 +236,7 @@ void profiler_handler(const shared_ptr<Session>& session) {
         {"Connection", "close" }});
 }
 
+/// HTTP handler used only to keep compatibility with purge endpoint.
 void purger_handler(const shared_ptr<Session>& session) {
     static const Bytes response;
     static const multimap<string, string> headers = {
@@ -231,6 +245,7 @@ void purger_handler(const shared_ptr<Session>& session) {
     session->yield(200, response, headers);
 }
 
+/// Utility to print logs only when profiling is enabled.
 void print_log(const string& message)
 {
     if constexpr (!const_performance_metrics_enabled) {
@@ -247,6 +262,7 @@ public:
     static constexpr size_t QUEUE_CAPACITY = 100'000;
     static constexpr size_t PROCESSED_CAPACITY = 3000;
 
+    /// Construct the payment service and spawn worker threads.
     PaymentService() {
         std::cout << "Initializing PaymentService v1.0..." << std::endl;
         const char* workerCount = getenv("WORKER_COUNT");
@@ -315,6 +331,7 @@ public:
         started = get_now();
     }
 
+    /// Stop all worker threads and release resources.
     ~PaymentService() {
         running = false;
         for (auto& t : workers) {
@@ -322,6 +339,7 @@ public:
         }
     }
 
+    /// Push a raw payment into the specified worker queue.
     void enqueue(size_t queue_idx, const RawPayment& r) const
     {
         //const auto start = get_now();
@@ -334,10 +352,12 @@ public:
         //record_profiler_value("put-queue", start);
     }
 
+    /// Return total number of worker queues.
     size_t queue_count() const {
         return queues.size();
     }
 
+    /// Aggregate processed payments between two timestamps.
     SummaryPair query(const string& from, const string& to) const
     {
         SummaryPair result;
@@ -370,6 +390,7 @@ public:
         return result;
     }
 
+    /// Query another service for health information.
     static Document service_health(const string& base_url) {
         Document result; result.SetObject();
         const string url = base_url + "/payments/service-health";
@@ -388,6 +409,7 @@ public:
     }
 
 private:
+    /// Periodically prints profiling statistics to stdout.
     void profiler_loop() const
     {
         while (running)
@@ -398,6 +420,7 @@ private:
         }
     }
 
+    /// Worker thread loop that processes payments from its queue.
     void worker_loop(const size_t worker_id) {
         last_fallback = get_now();
 
@@ -430,6 +453,7 @@ private:
         }
     }
 
+    /// Process a single payment and update state accordingly.
     void process(const size_t worker_id, const RawPayment& r, bool isFallbackPool)
     {
         //const auto start_parse = get_now();
@@ -457,6 +481,7 @@ private:
         }
     }
 
+    /// Pop the next payment from the worker queue if available.
     bool fetch_next(size_t worker_id, RawPayment& r) const
     {
         //const auto start = get_now();
@@ -473,6 +498,7 @@ private:
         return true;
     }
 
+    /// Transform raw JSON into processor payload and send it.
     tuple<ProcessorResult, uint64_t, string> process_payment(const size_t worker_id, string& json, bool isFallbackPool)
     {
         //const auto start = get_now();
@@ -521,6 +547,7 @@ private:
         return {ProcessorResult::TryAgain, ts, move(payload)};
     }
 
+    /// React to processor responses, updating statistics and triggering switches.
     void handle_response(const ProcessorResult processor, const double elapsed, const long code)
     {
         //const auto start = get_now();
@@ -574,6 +601,7 @@ private:
         //record_profiler_value("handle_response", start);
     }
 
+    /// Store elapsed time for the processor that handled a request.
     void update_time(const ProcessorResult& processor, const double elapsed)
     {
         if (processor == ProcessorResult::Default) {
@@ -583,6 +611,7 @@ private:
         }
     }
 
+    /// Swap main and fallback processors due to the given reason.
     void trigger_switch(const string& reason)
     {
         if (!fallback_enabled)
@@ -601,6 +630,7 @@ private:
         std::cout << reason << " - switching to " << main_url << " at " << now << std::endl;
     }
 
+    /// Decide whether to switch processors based on recent timings.
     void evaluate_switch()
     {
         if (!fallback_enabled || fallback_evaluated) {
@@ -632,6 +662,7 @@ private:
         //record_profiler_value("evaluate_switch", start);
     }
 
+    /// Add timestamp to the JSON payload and return it with epoch seconds.
     static pair<string, uint64_t> create_processor_payload(string& json) {
         //const auto start = get_now();
 
@@ -662,6 +693,7 @@ private:
         return {std::move(json), sec_since_epoch};
     }
 
+    /// Send the payload to the specified processor using a CURL handle.
     bool send_to_processor(const size_t worker, const ProcessorResult processor, const string& payload, double& elapsed, long& code) const
     {
         //const auto start_method = get_now();
@@ -699,6 +731,7 @@ private:
         return (res == CURLE_OK && code == 200);
     }
 
+    /// Store processed payment statistics in the ring buffer.
     void store_processed(const string& json, const ProcessorResult processor, const uint64_t timestamp) const
     {
         //const auto start = get_now();
@@ -770,6 +803,7 @@ private:
 
 static shared_ptr<PaymentService> service;
 
+/// REST handler for POST /payments.
 void post_payment_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
 
@@ -794,6 +828,7 @@ void post_payment_handler(const shared_ptr<Session>& session) {
     });
 }
 
+/// Request payment summary from another service instance.
 SummaryPair call_other_instance(const string& other, const string& from, const string& to) {
     SummaryPair result;
     const string url = other + "/payments-summary?from=" + from + "&to=" + to + "&internal=true";
@@ -822,6 +857,7 @@ SummaryPair call_other_instance(const string& other, const string& from, const s
     return result;
 }
 
+/// REST handler for GET /payments-summary.
 void payments_summary_handler(const shared_ptr<Session>& session) {
     const auto request = session->get_request();
     string from = request->get_query_parameter("from");
@@ -883,6 +919,7 @@ void payments_summary_handler(const shared_ptr<Session>& session) {
     });
 }
 
+/// Program entry point.
 int main(const int, char**) {
     std::cout << "Starting Payment Service..." << std::endl;
     init_profiler();
