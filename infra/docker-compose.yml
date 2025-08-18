@@ -7,7 +7,7 @@ services:
     environment:
       - INTER_INTERVAL=500
       - EMPTY_INTERVAL=100
-      - FALLBACK_ENABLED=0
+      - FALLBACK_ENABLED=1
       - PROCESSOR_URL=http://payment-processor-default:8080/payments
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080/payments
       - OTHER_INSTANCE_URL=http://app2:8080
@@ -32,7 +32,7 @@ services:
     environment:
       - INTER_INTERVAL=500
       - EMPTY_INTERVAL=100
-      - FALLBACK_ENABLED=0
+      - FALLBACK_ENABLED=1
       - PROCESSOR_URL=http://payment-processor-default:8080/payments
       - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080/payments
       - OTHER_INSTANCE_URL=http://app1:8080
